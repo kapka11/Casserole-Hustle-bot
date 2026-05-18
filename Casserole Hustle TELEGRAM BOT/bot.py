@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 
 TOKEN = "8648259830:AAHSFeLfaNyu9KDzDI8KN79_5J0IgEAllPo"
 DB = "bot.db"
-COOLDOWN = 3600
+COOLDOWN = 600
 COMMISSION = 0.2
 C_PRICE = 2.5
 S_PRICE = 10
