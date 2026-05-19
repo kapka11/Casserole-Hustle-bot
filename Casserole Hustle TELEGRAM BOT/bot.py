@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 
 TOKEN = "8206764435:AAFb5vDu87bAx7gR1iBuq0n5wXLIzug2ikY"
 DB = "bot.db"
-COOLDOWN = 600
+COOLDOWN = 3600
 COMMISSION = 0.2
 C_PRICE = 2.5
 S_PRICE = 10
@@ -152,9 +152,9 @@ async def cmd_top_syr(upd, ctx):
     await upd.message.reply_text(msg or "Пока никого нет", parse_mode="HTML")
 
 async def cmd_gift(upd, ctx):
-    if not upd.message.reply_to_message:
-        return await upd.message.reply_text("Ответьте на сообщение пользователя!")
-    t = upd.message.reply_to_message.from_user
+    t = get_target(upd)
+    if not t:
+        return await upd.message.reply_text("Ответьте на сообщение или укажите @пользователя!")
     if t.id == upd.effective_user.id:
         return await upd.message.reply_text("Себе нельзя!")
     args = ctx.args or re.findall(r'\d+', upd.message.text.split("подарить")[-1] if "подарить" in upd.message.text else "")
@@ -184,9 +184,9 @@ async def cmd_salary(upd, ctx):
     await upd.message.reply_text("💰 Получено 200 запекоинов!")
 
 async def cmd_givecoins(upd, ctx):
-    if not upd.message.reply_to_message:
-        return await upd.message.reply_text("Ответьте на сообщение!")
-    t = upd.message.reply_to_message.from_user
+    t = get_target(upd)
+    if not t:
+        return await upd.message.reply_text("Ответьте на сообщение или укажите @пользователя!")
     if t.id == upd.effective_user.id:
         return await upd.message.reply_text("Себе нельзя!")
     if not ctx.args: return await upd.message.reply_text("Укажите сумму! /givecoins 100")
@@ -206,6 +206,25 @@ async def cmd_givecoins(upd, ctx):
     conn.commit()
     conn.close()
     await upd.message.reply_text(f"✅ Переведено {amt}. {t.first_name} получил {recv} (комиссия: {comm})")
+
+def get_target(upd):
+    """Возвращает пользователя из reply или @упоминания"""
+    if upd.message.reply_to_message:
+        return upd.message.reply_to_message.from_user
+    if upd.message.entities:
+        for e in upd.message.entities:
+            if e.type == "text_mention" and e.user:
+                return e.user
+    return None
+
+async def bal_command(upd, ctx):
+    u, c = upd.effective_user, upd.effective_chat
+    target = get_target(upd) or u
+    du = get_user(target.id, c.id, target.username or "", target.first_name or "")
+    if target.id == u.id:
+        await upd.message.reply_text(f"🪙 Ваш баланс: {du['balance']} запекоинов")
+    else:
+        await upd.message.reply_text(f"🪙 Баланс {target.first_name}: {du['balance']} запекоинов")
 
 async def send_trade_request(upd, ctx, target_user, amt, cost, item, is_buy):
     """Отправляет запрос на подтверждение сделки"""
@@ -229,9 +248,9 @@ async def send_trade_request(upd, ctx, target_user, amt, cost, item, is_buy):
     await upd.message.reply_text(msg, reply_markup=kb)
 
 async def cmd_buy(upd, ctx):
-    if not upd.message.reply_to_message:
-        return await upd.message.reply_text("Ответьте на сообщение продавца!")
-    s = upd.message.reply_to_message.from_user
+    s = get_target(upd)
+    if not s:
+        return await upd.message.reply_text("Ответьте на сообщение или укажите @продавца!")
     if s.id == upd.effective_user.id: return await upd.message.reply_text("Нельзя у себя!")
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
@@ -245,9 +264,9 @@ async def cmd_buy(upd, ctx):
     await send_trade_request(upd, ctx, s, amt, cost, "c", True)
 
 async def cmd_buy_s(upd, ctx):
-    if not upd.message.reply_to_message:
-        return await upd.message.reply_text("Ответьте на сообщение продавца!")
-    s = upd.message.reply_to_message.from_user
+    s = get_target(upd)
+    if not s:
+        return await upd.message.reply_text("Ответьте на сообщение или укажите @продавца!")
     if s.id == upd.effective_user.id: return await upd.message.reply_text("Нельзя у себя!")
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
@@ -261,9 +280,9 @@ async def cmd_buy_s(upd, ctx):
     await send_trade_request(upd, ctx, s, amt, cost, "s", True)
 
 async def cmd_sell(upd, ctx):
-    if not upd.message.reply_to_message:
-        return await upd.message.reply_text("Ответьте на сообщение покупателя!")
-    b = upd.message.reply_to_message.from_user
+    b = get_target(upd)
+    if not b:
+        return await upd.message.reply_text("Ответьте на сообщение или укажите @покупателя!")
     if b.id == upd.effective_user.id: return await upd.message.reply_text("Нельзя себе!")
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
@@ -277,9 +296,9 @@ async def cmd_sell(upd, ctx):
     await send_trade_request(upd, ctx, b, amt, cost, "c", False)
 
 async def cmd_sell_s(upd, ctx):
-    if not upd.message.reply_to_message:
-        return await upd.message.reply_text("Ответьте на сообщение покупателя!")
-    b = upd.message.reply_to_message.from_user
+    b = get_target(upd)
+    if not b:
+        return await upd.message.reply_text("Ответьте на сообщение или укажите @покупателя!")
     if b.id == upd.effective_user.id: return await upd.message.reply_text("Нельзя себе!")
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
@@ -295,9 +314,9 @@ async def cmd_sell_s(upd, ctx):
 pending = {}
 
 async def cmd_coinflip(upd, ctx):
-    if not upd.message.reply_to_message:
-        return await upd.message.reply_text("Ответьте на сообщение противника!")
-    op = upd.message.reply_to_message.from_user
+    op = get_target(upd)
+    if not op:
+        return await upd.message.reply_text("Ответьте на сообщение или укажите @противника!")
     if op.id == upd.effective_user.id: return await upd.message.reply_text("С собой нельзя!")
     if op.is_bot: return await upd.message.reply_text("С ботом нельзя!")
     if not ctx.args: return await upd.message.reply_text("Укажите ставку! /coinflip 100")
@@ -395,7 +414,7 @@ async def cmd_help(upd, ctx):
     await upd.message.reply_text(
         "🍳 <b>Запеканочный Бот</b>\n\n"
         "/casserole или «casserole» — замутить запеканки (раз в час)\n"
-        "/me — профиль\n/top — топ чата\n/top_syrniki — топ сырников\n"
+        "/me — профиль\n/balance — баланс (свой или @пользователя)\n/top — топ чата\n/top_syrniki — топ сырников\n"
         "/salary — зарплата 200 (раз в час)\n"
         "/givecoins N — перевести (комиссия 20%)\n"
         "/gift N — подарить запеканки\n"
@@ -427,6 +446,7 @@ def main():
         builder = builder.proxy_url(PROXY).get_updates_proxy_url(PROXY)
     app = builder.build()
     for cmd, fn in [("start", cmd_help), ("help", cmd_help), ("casserole", cmd_casserole), ("me", cmd_me),
+                     ("balance", bal_command),
                      ("top", cmd_top), ("top_syrniki", cmd_top_syr), ("gift", cmd_gift),
                      ("salary", cmd_salary), ("givecoins", cmd_givecoins), ("buy", cmd_buy),
                      ("buy_s", cmd_buy_s), ("sell", cmd_sell), ("sell_s", cmd_sell_s),
