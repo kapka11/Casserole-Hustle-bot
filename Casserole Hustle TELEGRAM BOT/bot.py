@@ -2,7 +2,7 @@ import asyncio, random, time, re, os, psycopg2
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-TOKEN = "8206764435:AAFb5vDu87bAx7gR1iBuq0n5wXLIzug2ikY"
+TOKEN = os.getenv('TELEGRAM_TOKEN')
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 COOLDOWN = 600
 COMMISSION = 0.2
