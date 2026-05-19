@@ -16,25 +16,39 @@ def get_db():
 
 def init_db():
     conn = get_db()
-    conn.executescript("""
+    cursor = conn.cursor()
+    
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER, chat_id INTEGER,
-            username TEXT DEFAULT '', first_name TEXT DEFAULT '',
-            total_casseroles INTEGER DEFAULT 0, casseroles INTEGER DEFAULT 0,
-            total_syrniki INTEGER DEFAULT 0, syrniki INTEGER DEFAULT 0,
-            casserole_actions INTEGER DEFAULT 0, level INTEGER DEFAULT 1,
+            user_id INTEGER,
+            chat_id INTEGER,
+            username TEXT DEFAULT '',
+            first_name TEXT DEFAULT '',
+            total_casseroles INTEGER DEFAULT 0,
+            casseroles INTEGER DEFAULT 0,
+            total_syrniki INTEGER DEFAULT 0,
+            syrniki INTEGER DEFAULT 0,
+            casserole_actions INTEGER DEFAULT 0,
+            level INTEGER DEFAULT 1,
             balance INTEGER DEFAULT 0,
-            last_casserole REAL DEFAULT 0, last_salary REAL DEFAULT 0,
+            last_casserole REAL DEFAULT 0,
+            last_salary REAL DEFAULT 0,
             next_level_at INTEGER DEFAULT 10,
             PRIMARY KEY (user_id, chat_id)
-        );
+        )
+    """)
+    
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS gsyrniki (
             user_id INTEGER PRIMARY KEY,
-            username TEXT DEFAULT '', first_name TEXT DEFAULT '',
+            username TEXT DEFAULT '',
+            first_name TEXT DEFAULT '',
             total_syrniki INTEGER DEFAULT 0
-        );
+        )
     """)
+    
     conn.commit()
+    cursor.close()
     conn.close()
 
 def get_user(uid, cid, uname="", fname=""):
