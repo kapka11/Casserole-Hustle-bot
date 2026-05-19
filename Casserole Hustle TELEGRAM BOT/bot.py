@@ -11,8 +11,7 @@ C_PRICE = 5
 S_PRICE = 20
 PROXY = os.environ.get("TG_PROXY", "")
 STEAL_COOLDOWN = 300
-STEAL_SUCCESS = 1.0
-OWNER_ID = 6553530713
+STEAL_SUCCESS = 100
 
 COLUMNS = ["user_id","chat_id","username","first_name","total_casseroles","casseroles","total_syrniki","syrniki","casserole_actions","level","balance","last_casserole","last_salary","next_level_at"]
 
@@ -43,6 +42,13 @@ def init_db():
             user_id BIGINT PRIMARY KEY,
             username TEXT DEFAULT '', first_name TEXT DEFAULT '',
             total_syrniki INTEGER DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS username_cache (
+            username TEXT, chat_id BIGINT, user_id BIGINT,
+            first_name TEXT DEFAULT '',
+            PRIMARY KEY (username, chat_id)
         )
     """)
     conn.commit()
@@ -258,7 +264,17 @@ async def get_target(upd, ctx):
                     chat = await ctx.bot.get_chat(f"@{username}")
                     return chat
                 except:
-                    pass
+                    conn = get_db()
+                    cur = conn.cursor()
+                    cur.execute("SELECT user_id, first_name FROM username_cache WHERE LOWER(username)=%s AND chat_id=%s LIMIT 1", (username.lower(), upd.effective_chat.id))
+                    r = cur.fetchone()
+                    cur.close()
+                    conn.close()
+                    if r:
+                        class Fake: pass
+                        u = Fake()
+                        u.id = r[0]; u.first_name = r[1] or username; u.username = username
+                        return u
     return None
 
 async def bal_command(upd, ctx):
@@ -521,11 +537,20 @@ async def cmd_help(upd, ctx):
         "/buy N — купить запеканки\n/buy_s N — купить сырники\n"
         "/sell N — продать запеканки\n/sell_s N — продать сырники\n"
         "/coinflip N — орёл и решка\n"
+        "/stealing N — украсть запеканки\n/stealing_s N — украсть сырники\n/stealing_coins N — украсть запекоины\n\n"
         "«подарить N» ответом — подарить запеканки\n\n"
         "10 запеканок = 25 🪙 | 1 сырник = 10 🪙\n"
         "Комиссия 20% на всё, кроме зарплаты и coinflip",
         parse_mode="HTML"
     )
+
+async def cache_user(upd, ctx):
+    u = upd.effective_user
+    if not u or not u.username: return
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("INSERT INTO username_cache (username, chat_id, user_id, first_name) VALUES (%s,%s,%s,%s) ON CONFLICT (username, chat_id) DO UPDATE SET user_id=%s, first_name=%s",
+                (u.username.lower(), upd.effective_chat.id, u.id, u.first_name or "", u.id, u.first_name or ""))
+    conn.commit(); cur.close(); conn.close()
 
 async def text_casserole(upd, ctx):
     if not upd.message.text: return
@@ -545,6 +570,7 @@ def main():
     if PROXY:
         builder = builder.proxy_url(PROXY).get_updates_proxy_url(PROXY)
     app = builder.build()
+    app.add_handler(MessageHandler(filters.ALL, cache_user), group=0)
     for cmd, fn in [("start", cmd_help), ("help", cmd_help), ("casserole", cmd_casserole), ("me", cmd_me),
                      ("balance", bal_command),
                      ("top", cmd_top), ("top_syrniki", cmd_top_syr), ("gift", cmd_gift),
@@ -552,11 +578,11 @@ def main():
                      ("buy_s", cmd_buy_s), ("sell", cmd_sell), ("sell_s", cmd_sell_s),
                      ("coinflip", cmd_coinflip),
                      ("stealing", stealing), ("stealing_s", stealing_s), ("stealing_coins", stealing_coins)]:
-        app.add_handler(CommandHandler(cmd, fn))
-    app.add_handler(CallbackQueryHandler(coinflip_cb, pattern="^cf"))
-    app.add_handler(CallbackQueryHandler(trade_cb, pattern="^[bs]_"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.REPLY & filters.Regex(r'(?i)^casserole$'), text_casserole))
-    app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, text_gift))
+        app.add_handler(CommandHandler(cmd, fn), group=1)
+    app.add_handler(CallbackQueryHandler(coinflip_cb, pattern="^cf"), group=1)
+    app.add_handler(CallbackQueryHandler(trade_cb, pattern="^[bs]_"), group=1)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.REPLY & filters.Regex(r'(?i)^casserole$'), text_casserole), group=1)
+    app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, text_gift), group=1)
     print("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
