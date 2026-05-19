@@ -1,9 +1,11 @@
-import asyncio, random, time, re, sqlite3, os
+import asyncio, random, time, re, os
+import psycopg2
+from psycopg2 import sql
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 TOKEN = "8648259830:AAHSFeLfaNyu9KDzDI8KN79_5J0IgEAllPo"
-DB = "bot.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 COOLDOWN = 600
 COMMISSION = 0.2
 C_PRICE = 2.5
@@ -11,53 +13,77 @@ S_PRICE = 10
 PROXY = os.environ.get("TG_PROXY", "")
 
 def get_db():
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
 
 def init_db():
     conn = get_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER, chat_id INTEGER,
-            username TEXT DEFAULT '', first_name TEXT DEFAULT '',
-            total_casseroles INTEGER DEFAULT 0, casseroles INTEGER DEFAULT 0,
-            total_syrniki INTEGER DEFAULT 0, syrniki INTEGER DEFAULT 0,
-            casserole_actions INTEGER DEFAULT 0, level INTEGER DEFAULT 1,
-            balance INTEGER DEFAULT 0,
-            last_casserole REAL DEFAULT 0, last_salary REAL DEFAULT 0,
-            next_level_at INTEGER DEFAULT 10,
-            PRIMARY KEY (user_id, chat_id)
-        );
-        CREATE TABLE IF NOT EXISTS gsyrniki (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT DEFAULT '', first_name TEXT DEFAULT '',
-            total_syrniki INTEGER DEFAULT 0
-        );
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id BIGINT,
+        chat_id BIGINT,
+        username TEXT DEFAULT '',
+        first_name TEXT DEFAULT '',
+        total_casseroles INTEGER DEFAULT 0,
+        casseroles INTEGER DEFAULT 0,
+        total_syrniki INTEGER DEFAULT 0,
+        syrniki INTEGER DEFAULT 0,
+        casserole_actions INTEGER DEFAULT 0,
+        level INTEGER DEFAULT 1,
+        balance INTEGER DEFAULT 0,
+        last_casserole DOUBLE PRECISION DEFAULT 0,
+        last_salary DOUBLE PRECISION DEFAULT 0,
+        next_level_at INTEGER DEFAULT 10,
+        PRIMARY KEY (user_id, chat_id)
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS gsyrniki (
+        user_id BIGINT PRIMARY KEY,
+        username TEXT DEFAULT '',
+        first_name TEXT DEFAULT '',
+        total_syrniki INTEGER DEFAULT 0
+    )
     """)
     conn.commit()
+    cur.close()
     conn.close()
 
 def get_user(uid, cid, uname="", fname=""):
     conn = get_db()
-    cur = conn.execute("SELECT * FROM users WHERE user_id=? AND chat_id=?", (uid, cid))
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE user_id=%s AND chat_id=%s", (uid, cid))
     row = cur.fetchone()
+    
     if row:
         if uname or fname:
-            conn.execute("UPDATE users SET username=?, first_name=? WHERE user_id=? AND chat_id=?", (uname, fname, uid, cid))
+            cur.execute("UPDATE users SET username=%s, first_name=%s WHERE user_id=%s AND chat_id=%s", 
+                       (uname, fname, uid, cid))
             conn.commit()
+        cur.close()
         conn.close()
-        return dict(row)
+        cols = ['user_id', 'chat_id', 'username', 'first_name', 'total_casseroles', 'casseroles', 
+                'total_syrniki', 'syrniki', 'casserole_actions', 'level', 'balance', 'last_casserole', 'last_salary', 'next_level_at']
+        return dict(zip(cols, row))
+    
     req = random.randint(5, 10)
-    conn.execute("INSERT INTO users (user_id,chat_id,username,first_name,next_level_at) VALUES (?,?,?,?,?)", (uid, cid, uname, fname, req))
+    cur.execute("INSERT INTO users (user_id,chat_id,username,first_name,next_level_at) VALUES (%s,%s,%s,%s,%s)", 
+               (uid, cid, uname, fname, req))
     conn.commit()
+    cur.close()
     conn.close()
-    return {"user_id":uid,"chat_id":cid,"username":uname,"first_name":fname,"total_casseroles":0,"casseroles":0,"total_syrniki":0,"syrniki":0,"casserole_actions":0,"level":1,"balance":0,"last_casserole":0,"last_salary":0,"next_level_at":req}
+    return {"user_id":uid,"chat_id":cid,"username":uname,"first_name":fname,"total_casseroles":0,"casseroles":0,
+            "total_syrniki":0,"syrniki":0,"casserole_actions":0,"level":1,"balance":0,"last_casserole":0,"last_salary":0,"next_level_at":req}
 
 def upd_user(uid, cid, **kw):
     conn = get_db()
-    conn.execute(f"UPDATE users SET {', '.join(f'{k}=?' for k in kw)} WHERE user_id=? AND chat_id=?", (*kw.values(), uid, cid))
+    cur = conn.cursor()
+    cols = ', '.join(f'{k}=%s' for k in kw)
+    cur.execute(f"UPDATE users SET {cols} WHERE user_id=%s AND chat_id=%s", 
+               (*kw.values(), uid, cid))
     conn.commit()
+    cur.close()
     conn.close()
 
 def do_casserole(uid, cid, uname, fname):
@@ -70,6 +96,7 @@ def do_casserole(uid, cid, uname, fname):
         elif lv == 2: mx = max(1, round(5 * lv / 1.5))
         else: mx = max(1, round(5 * lv / 2))
         syr = random.randint(1, mx)
+    
     acts = u["casserole_actions"] + 1
     new_total = u["total_casseroles"] + amount
     new_cass = u["casseroles"] + amount
@@ -78,21 +105,30 @@ def do_casserole(uid, cid, uname, fname):
     lv = u["level"]
     nla = u["next_level_at"]
     lvup = False
+    
     if acts >= nla:
         lv += 1
         lvup = True
         nla = acts + random.randint(5 + lv * 2, 10 + lv * 5)
-    upd_user(uid, cid, total_casseroles=new_total, casseroles=new_cass, total_syrniki=new_tsyr, syrniki=new_syr, casserole_actions=acts, level=lv, next_level_at=nla, last_casserole=time.time())
+    
+    upd_user(uid, cid, total_casseroles=new_total, casseroles=new_cass, total_syrniki=new_tsyr, 
+            syrniki=new_syr, casserole_actions=acts, level=lv, next_level_at=nla, last_casserole=time.time())
+    
     if syr > 0:
         conn = get_db()
-        cur = conn.execute("SELECT total_syrniki FROM gsyrniki WHERE user_id=?", (uid,))
+        cur = conn.cursor()
+        cur.execute("SELECT total_syrniki FROM gsyrniki WHERE user_id=%s", (uid,))
         r = cur.fetchone()
         if r:
-            conn.execute("UPDATE gsyrniki SET total_syrniki=?, username=?, first_name=? WHERE user_id=?", (r[0]+syr, uname, fname, uid))
+            cur.execute("UPDATE gsyrniki SET total_syrniki=%s, username=%s, first_name=%s WHERE user_id=%s", 
+                       (r[0]+syr, uname, fname, uid))
         else:
-            conn.execute("INSERT INTO gsyrniki (user_id,username,first_name,total_syrniki) VALUES (?,?,?,?)", (uid, uname, fname, syr))
+            cur.execute("INSERT INTO gsyrniki (user_id,username,first_name,total_syrniki) VALUES (%s,%s,%s,%s)", 
+                       (uid, uname, fname, syr))
         conn.commit()
+        cur.close()
         conn.close()
+    
     return {"amount":amount,"syr":syr,"lvup":lvup,"lv":lv,"rem":nla-acts,"total":new_total}
 
 async def cmd_casserole(upd, ctx):
@@ -114,8 +150,11 @@ async def cmd_me(upd, ctx):
     u, c = upd.effective_user, upd.effective_chat
     du = get_user(u.id, c.id, u.username or "", u.first_name or "")
     conn = get_db()
-    cur = conn.execute("SELECT COUNT(*)+1 FROM users WHERE chat_id=? AND total_casseroles>(SELECT total_casseroles FROM users WHERE user_id=? AND chat_id=?)", (c.id, u.id, c.id))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*)+1 FROM users WHERE chat_id=%s AND total_casseroles>(SELECT total_casseroles FROM users WHERE user_id=%s AND chat_id=%s)", 
+               (c.id, u.id, c.id))
     rank = cur.fetchone()[0]
+    cur.close()
     conn.close()
     rem = du["next_level_at"] - du["casserole_actions"]
     await upd.message.reply_text(
@@ -131,24 +170,31 @@ async def cmd_me(upd, ctx):
 
 async def cmd_top(upd, ctx):
     conn = get_db()
-    c1 = conn.execute("SELECT * FROM users WHERE chat_id=? ORDER BY total_casseroles DESC LIMIT 10", (upd.effective_chat.id,)).fetchall()
-    c2 = conn.execute("SELECT * FROM users WHERE chat_id=? ORDER BY level DESC LIMIT 10", (upd.effective_chat.id,)).fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE chat_id=%s ORDER BY total_casseroles DESC LIMIT 10", (upd.effective_chat.id,))
+    c1 = cur.fetchall()
+    cur.execute("SELECT * FROM users WHERE chat_id=%s ORDER BY level DESC LIMIT 10", (upd.effective_chat.id,))
+    c2 = cur.fetchall()
+    cur.close()
     conn.close()
     msg = "🏆 <b>ТОП ЗАПЕКАНОЧНЫХ ЦЕНТРОВ</b>\n\n<b>По запеканкам:</b>\n"
     for i, r in enumerate(c1, 1):
-        msg += f"{i}. {r['first_name'] or r['username'] or '#'+str(r['user_id'])} — {r['total_casseroles']} 🍳\n"
+        msg += f"{i}. {r[3] or r[2] or '#'+str(r[0])} — {r[4]} 🍳\n"
     msg += "\n<b>По уровню:</b>\n"
     for i, r in enumerate(c2, 1):
-        msg += f"{i}. {r['first_name'] or r['username'] or '#'+str(r['user_id'])} — {r['level']} 🆙\n"
+        msg += f"{i}. {r[3] or r[2] or '#'+str(r[0])} — {r[9]} 🆙\n"
     await upd.message.reply_text(msg, parse_mode="HTML")
 
 async def cmd_top_syr(upd, ctx):
     conn = get_db()
-    rows = conn.execute("SELECT * FROM gsyrniki WHERE total_syrniki>0 ORDER BY total_syrniki DESC LIMIT 10").fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM gsyrniki WHERE total_syrniki>0 ORDER BY total_syrniki DESC LIMIT 10")
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     msg = "🧀 <b>ТОП ВЕЗУНЧИКОВ (ВСЕ ЧАТЫ)</b>\n\n"
     for i, r in enumerate(rows, 1):
-        msg += f"{i}. {r['first_name'] or r['username'] or '#'+str(r['user_id'])} — {r['total_syrniki']} 🧀\n"
+        msg += f"{i}. {r[2] or r[1] or '#'+str(r[0])} — {r[3]} 🧀\n"
     await upd.message.reply_text(msg or "Пока никого нет", parse_mode="HTML")
 
 async def cmd_gift(upd, ctx):
@@ -163,14 +209,17 @@ async def cmd_gift(upd, ctx):
     except: return await upd.message.reply_text("Число!")
     if amt <= 0: return await upd.message.reply_text("Положительное число!")
     conn = get_db()
-    cur = conn.execute("SELECT casseroles FROM users WHERE user_id=? AND chat_id=?", (upd.effective_user.id, upd.effective_chat.id))
+    cur = conn.cursor()
+    cur.execute("SELECT casseroles FROM users WHERE user_id=%s AND chat_id=%s", (upd.effective_user.id, upd.effective_chat.id))
     r = cur.fetchone()
     if not r or r[0] < amt:
+        cur.close()
         conn.close()
         return await upd.message.reply_text("❌ Недостаточно запеканок!")
-    conn.execute("UPDATE users SET casseroles=casseroles-? WHERE user_id=? AND chat_id=?", (amt, upd.effective_user.id, upd.effective_chat.id))
-    conn.execute("UPDATE users SET casseroles=casseroles+? WHERE user_id=? AND chat_id=?", (amt, t.id, upd.effective_chat.id))
+    cur.execute("UPDATE users SET casseroles=casseroles-%s WHERE user_id=%s AND chat_id=%s", (amt, upd.effective_user.id, upd.effective_chat.id))
+    cur.execute("UPDATE users SET casseroles=casseroles+%s WHERE user_id=%s AND chat_id=%s", (amt, t.id, upd.effective_chat.id))
     conn.commit()
+    cur.close()
     conn.close()
     await upd.message.reply_text(f"✅ Подарено {amt} запеканок {t.first_name}!")
 
@@ -194,16 +243,19 @@ async def cmd_givecoins(upd, ctx):
     except: return await upd.message.reply_text("Число!")
     if amt <= 0: return await upd.message.reply_text("Положительное число!")
     conn = get_db()
-    cur = conn.execute("SELECT balance FROM users WHERE user_id=? AND chat_id=?", (upd.effective_user.id, upd.effective_chat.id))
+    cur = conn.cursor()
+    cur.execute("SELECT balance FROM users WHERE user_id=%s AND chat_id=%s", (upd.effective_user.id, upd.effective_chat.id))
     r = cur.fetchone()
     if not r or r[0] < amt:
+        cur.close()
         conn.close()
         return await upd.message.reply_text("❌ Недостаточно запекоинов!")
     recv = int(amt * (1 - COMMISSION))
     comm = amt - recv
-    conn.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND chat_id=?", (amt, upd.effective_user.id, upd.effective_chat.id))
-    conn.execute("UPDATE users SET balance=balance+? WHERE user_id=? AND chat_id=?", (recv, t.id, upd.effective_chat.id))
+    cur.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s AND chat_id=%s", (amt, upd.effective_user.id, upd.effective_chat.id))
+    cur.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s AND chat_id=%s", (recv, t.id, upd.effective_chat.id))
     conn.commit()
+    cur.close()
     conn.close()
     await upd.message.reply_text(f"✅ Переведено {amt}. {t.first_name} получил {recv} (комиссия: {comm})")
 
@@ -341,9 +393,11 @@ async def coinflip_cb(upd, ctx):
         else:
             winner, loser, wn, ln = u2id, u1id, f2, f1
         conn = get_db()
-        conn.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND chat_id=?", (bet, loser, cid))
-        conn.execute("UPDATE users SET balance=balance+? WHERE user_id=? AND chat_id=?", (bet, winner, cid))
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s AND chat_id=%s", (bet, loser, cid))
+        cur.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s AND chat_id=%s", (bet, winner, cid))
         conn.commit()
+        cur.close()
         conn.close()
         await msg.edit_text(f"🎉 Победил {wn}!\n💸 {ln} проиграл {bet} запекоинов.")
 
@@ -383,10 +437,10 @@ def main():
         builder = builder.proxy_url(PROXY).get_updates_proxy_url(PROXY)
     app = builder.build()
     for cmd, fn in [("start", cmd_help), ("help", cmd_help), ("casserole", cmd_casserole), ("me", cmd_me),
-                     ("top", cmd_top), ("top_syrniki", cmd_top_syr), ("gift", cmd_gift),
-                     ("salary", cmd_salary), ("givecoins", cmd_givecoins), ("buy", cmd_buy),
-                     ("buy_s", cmd_buy_s), ("sell", cmd_sell), ("sell_s", cmd_sell_s),
-                     ("coinflip", cmd_coinflip)]:
+        ("top", cmd_top), ("top_syrniki", cmd_top_syr), ("gift", cmd_gift),
+        ("salary", cmd_salary), ("givecoins", cmd_givecoins), ("buy", cmd_buy),
+        ("buy_s", cmd_buy_s), ("sell", cmd_sell), ("sell_s", cmd_sell_s),
+        ("coinflip", cmd_coinflip)]:
         app.add_handler(CommandHandler(cmd, fn))
     app.add_handler(CallbackQueryHandler(coinflip_cb, pattern="^cf"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.REPLY & filters.Regex(r'(?i)^casserole$'), text_casserole))
