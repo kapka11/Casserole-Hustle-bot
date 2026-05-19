@@ -3,16 +3,15 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 TOKEN = "8206764435:AAFb5vDu87bAx7gR1iBuq0n5wXLIzug2ikY"
-DB = "bot.db"
-COOLDOWN = 3600
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+COOLDOWN = 600
 COMMISSION = 0.2
 C_PRICE = 5
 S_PRICE = 20
 PROXY = os.environ.get("TG_PROXY", "")
 
 def get_db():
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
 
 def init_db():
@@ -64,7 +63,7 @@ def do_casserole(uid, cid, uname, fname):
     u = get_user(uid, cid, uname, fname)
     amount = random.randint(1, 20)
     syr = 0
-    if random.random() < 0.15:
+    if random.random() < 0.20:
         lv = u["level"]
         if lv == 1: mx = 5
         elif lv == 2: mx = max(1, round(5 * lv / 1.5))
