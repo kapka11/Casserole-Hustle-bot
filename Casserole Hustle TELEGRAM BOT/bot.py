@@ -6,8 +6,8 @@ TOKEN = "8206764435:AAFb5vDu87bAx7gR1iBuq0n5wXLIzug2ikY"
 DB = "bot.db"
 COOLDOWN = 3600
 COMMISSION = 0.2
-C_PRICE = 2.5
-S_PRICE = 10
+C_PRICE = 5
+S_PRICE = 20
 PROXY = os.environ.get("TG_PROXY", "")
 
 def get_db():
