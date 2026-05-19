@@ -1,4 +1,5 @@
 import asyncio, random, time, re, os, psycopg2
+from psycopg2.extras import RealDictCursor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
@@ -10,67 +11,68 @@ C_PRICE = 5
 S_PRICE = 20
 PROXY = os.environ.get("TG_PROXY", "")
 
+COLUMNS = ["user_id","chat_id","username","first_name","total_casseroles","casseroles","total_syrniki","syrniki","casserole_actions","level","balance","last_casserole","last_salary","next_level_at"]
+
+def row_dict(row, cols=COLUMNS):
+    return dict(zip(cols, row)) if row else None
+
 def get_db():
-    conn = psycopg2.connect(DATABASE_URL)
-    return conn
+    return psycopg2.connect(DATABASE_URL)
 
 def init_db():
     conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
+    cur = conn.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER,
-            chat_id INTEGER,
-            username TEXT DEFAULT '',
-            first_name TEXT DEFAULT '',
-            total_casseroles INTEGER DEFAULT 0,
-            casseroles INTEGER DEFAULT 0,
-            total_syrniki INTEGER DEFAULT 0,
-            syrniki INTEGER DEFAULT 0,
-            casserole_actions INTEGER DEFAULT 0,
-            level INTEGER DEFAULT 1,
+            user_id BIGINT, chat_id BIGINT,
+            username TEXT DEFAULT '', first_name TEXT DEFAULT '',
+            total_casseroles INTEGER DEFAULT 0, casseroles INTEGER DEFAULT 0,
+            total_syrniki INTEGER DEFAULT 0, syrniki INTEGER DEFAULT 0,
+            casserole_actions INTEGER DEFAULT 0, level INTEGER DEFAULT 1,
             balance INTEGER DEFAULT 0,
-            last_casserole REAL DEFAULT 0,
-            last_salary REAL DEFAULT 0,
+            last_casserole REAL DEFAULT 0, last_salary REAL DEFAULT 0,
             next_level_at INTEGER DEFAULT 10,
             PRIMARY KEY (user_id, chat_id)
         )
     """)
-    
-    cursor.execute("""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS gsyrniki (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT DEFAULT '',
-            first_name TEXT DEFAULT '',
+            user_id BIGINT PRIMARY KEY,
+            username TEXT DEFAULT '', first_name TEXT DEFAULT '',
             total_syrniki INTEGER DEFAULT 0
         )
     """)
-    
     conn.commit()
-    cursor.close()
+    cur.close()
     conn.close()
 
 def get_user(uid, cid, uname="", fname=""):
     conn = get_db()
-    cur = conn.execute("SELECT * FROM users WHERE user_id=? AND chat_id=?", (uid, cid))
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE user_id=%s AND chat_id=%s", (uid, cid))
     row = cur.fetchone()
     if row:
         if uname or fname:
-            conn.execute("UPDATE users SET username=?, first_name=? WHERE user_id=? AND chat_id=?", (uname, fname, uid, cid))
+            cur.execute("UPDATE users SET username=%s, first_name=%s WHERE user_id=%s AND chat_id=%s", (uname, fname, uid, cid))
             conn.commit()
+        cur.close()
         conn.close()
-        return dict(row)
+        return row_dict(row)
     req = random.randint(5, 10)
-    conn.execute("INSERT INTO users (user_id,chat_id,username,first_name,next_level_at) VALUES (?,?,?,?,?)", (uid, cid, uname, fname, req))
+    cur.execute("INSERT INTO users (user_id,chat_id,username,first_name,next_level_at) VALUES (%s,%s,%s,%s,%s)", (uid, cid, uname, fname, req))
     conn.commit()
+    cur.close()
     conn.close()
     return {"user_id":uid,"chat_id":cid,"username":uname,"first_name":fname,"total_casseroles":0,"casseroles":0,"total_syrniki":0,"syrniki":0,"casserole_actions":0,"level":1,"balance":0,"last_casserole":0,"last_salary":0,"next_level_at":req}
 
 def upd_user(uid, cid, **kw):
     conn = get_db()
-    conn.execute(f"UPDATE users SET {', '.join(f'{k}=?' for k in kw)} WHERE user_id=? AND chat_id=?", (*kw.values(), uid, cid))
+    cur = conn.cursor()
+    sets = ", ".join(f"{k}=%s" for k in kw)
+    vals = list(kw.values()) + [uid, cid]
+    cur.execute(f"UPDATE users SET {sets} WHERE user_id=%s AND chat_id=%s", vals)
     conn.commit()
+    cur.close()
     conn.close()
 
 def do_casserole(uid, cid, uname, fname):
@@ -98,13 +100,15 @@ def do_casserole(uid, cid, uname, fname):
     upd_user(uid, cid, total_casseroles=new_total, casseroles=new_cass, total_syrniki=new_tsyr, syrniki=new_syr, casserole_actions=acts, level=lv, next_level_at=nla, last_casserole=time.time())
     if syr > 0:
         conn = get_db()
-        cur = conn.execute("SELECT total_syrniki FROM gsyrniki WHERE user_id=?", (uid,))
+        cur = conn.cursor()
+        cur.execute("SELECT total_syrniki FROM gsyrniki WHERE user_id=%s", (uid,))
         r = cur.fetchone()
         if r:
-            conn.execute("UPDATE gsyrniki SET total_syrniki=?, username=?, first_name=? WHERE user_id=?", (r[0]+syr, uname, fname, uid))
+            cur.execute("UPDATE gsyrniki SET total_syrniki=%s, username=%s, first_name=%s WHERE user_id=%s", (r[0]+syr, uname, fname, uid))
         else:
-            conn.execute("INSERT INTO gsyrniki (user_id,username,first_name,total_syrniki) VALUES (?,?,?,?)", (uid, uname, fname, syr))
+            cur.execute("INSERT INTO gsyrniki (user_id,username,first_name,total_syrniki) VALUES (%s,%s,%s,%s)", (uid, uname, fname, syr))
         conn.commit()
+        cur.close()
         conn.close()
     return {"amount":amount,"syr":syr,"lvup":lvup,"lv":lv,"rem":nla-acts,"total":new_total}
 
@@ -127,8 +131,10 @@ async def cmd_me(upd, ctx):
     u, c = upd.effective_user, upd.effective_chat
     du = get_user(u.id, c.id, u.username or "", u.first_name or "")
     conn = get_db()
-    cur = conn.execute("SELECT COUNT(*)+1 FROM users WHERE chat_id=? AND total_casseroles>(SELECT total_casseroles FROM users WHERE user_id=? AND chat_id=?)", (c.id, u.id, c.id))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*)+1 FROM users WHERE chat_id=%s AND total_casseroles>(SELECT total_casseroles FROM users WHERE user_id=%s AND chat_id=%s)", (c.id, u.id, c.id))
     rank = cur.fetchone()[0]
+    cur.close()
     conn.close()
     rem = du["next_level_at"] - du["casserole_actions"]
     await upd.message.reply_text(
@@ -144,28 +150,38 @@ async def cmd_me(upd, ctx):
 
 async def cmd_top(upd, ctx):
     conn = get_db()
-    c1 = conn.execute("SELECT * FROM users WHERE chat_id=? ORDER BY total_casseroles DESC LIMIT 10", (upd.effective_chat.id,)).fetchall()
-    c2 = conn.execute("SELECT * FROM users WHERE chat_id=? ORDER BY level DESC LIMIT 10", (upd.effective_chat.id,)).fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE chat_id=%s ORDER BY total_casseroles DESC LIMIT 10", (upd.effective_chat.id,))
+    c1 = cur.fetchall()
+    cur.execute("SELECT * FROM users WHERE chat_id=%s ORDER BY level DESC LIMIT 10", (upd.effective_chat.id,))
+    c2 = cur.fetchall()
+    cur.close()
     conn.close()
     msg = "🏆 <b>ТОП ЗАПЕКАНОЧНЫХ ЦЕНТРОВ</b>\n\n<b>По запеканкам:</b>\n"
     for i, r in enumerate(c1, 1):
-        msg += f"{i}. {r['first_name'] or r['username'] or '#'+str(r['user_id'])} — {r['total_casseroles']} 🍳\n"
+        rd = row_dict(r)
+        msg += f"{i}. {rd['first_name'] or rd['username'] or '#'+str(rd['user_id'])} — {rd['total_casseroles']} 🍳\n"
     msg += "\n<b>По уровню:</b>\n"
     for i, r in enumerate(c2, 1):
-        msg += f"{i}. {r['first_name'] or r['username'] or '#'+str(r['user_id'])} — {r['level']} 🆙\n"
+        rd = row_dict(r)
+        msg += f"{i}. {rd['first_name'] or rd['username'] or '#'+str(rd['user_id'])} — {rd['level']} 🆙\n"
     await upd.message.reply_text(msg, parse_mode="HTML")
 
 async def cmd_top_syr(upd, ctx):
     conn = get_db()
-    rows = conn.execute("SELECT * FROM gsyrniki WHERE total_syrniki>0 ORDER BY total_syrniki DESC LIMIT 10").fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM gsyrniki WHERE total_syrniki>0 ORDER BY total_syrniki DESC LIMIT 10")
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     msg = "🧀 <b>ТОП ВЕЗУНЧИКОВ (ВСЕ ЧАТЫ)</b>\n\n"
     for i, r in enumerate(rows, 1):
-        msg += f"{i}. {r['first_name'] or r['username'] or '#'+str(r['user_id'])} — {r['total_syrniki']} 🧀\n"
+        rd = row_dict(r, ["user_id","username","first_name","total_syrniki"])
+        msg += f"{i}. {rd['first_name'] or rd['username'] or '#'+str(rd['user_id'])} — {rd['total_syrniki']} 🧀\n"
     await upd.message.reply_text(msg or "Пока никого нет", parse_mode="HTML")
 
 async def cmd_gift(upd, ctx):
-    t = get_target(upd)
+    t = await get_target(upd, ctx)
     if not t:
         return await upd.message.reply_text("Ответьте на сообщение или укажите @пользователя!")
     if t.id == upd.effective_user.id:
@@ -176,14 +192,17 @@ async def cmd_gift(upd, ctx):
     except: return await upd.message.reply_text("Число!")
     if amt <= 0: return await upd.message.reply_text("Положительное число!")
     conn = get_db()
-    cur = conn.execute("SELECT casseroles FROM users WHERE user_id=? AND chat_id=?", (upd.effective_user.id, upd.effective_chat.id))
+    cur = conn.cursor()
+    cur.execute("SELECT casseroles FROM users WHERE user_id=%s AND chat_id=%s", (upd.effective_user.id, upd.effective_chat.id))
     r = cur.fetchone()
     if not r or r[0] < amt:
+        cur.close()
         conn.close()
         return await upd.message.reply_text("❌ Недостаточно запеканок!")
-    conn.execute("UPDATE users SET casseroles=casseroles-? WHERE user_id=? AND chat_id=?", (amt, upd.effective_user.id, upd.effective_chat.id))
-    conn.execute("UPDATE users SET casseroles=casseroles+? WHERE user_id=? AND chat_id=?", (amt, t.id, upd.effective_chat.id))
+    cur.execute("UPDATE users SET casseroles=casseroles-%s WHERE user_id=%s AND chat_id=%s", (amt, upd.effective_user.id, upd.effective_chat.id))
+    cur.execute("UPDATE users SET casseroles=casseroles+%s WHERE user_id=%s AND chat_id=%s", (amt, t.id, upd.effective_chat.id))
     conn.commit()
+    cur.close()
     conn.close()
     await upd.message.reply_text(f"✅ Подарено {amt} запеканок {t.first_name}!")
 
@@ -197,7 +216,7 @@ async def cmd_salary(upd, ctx):
     await upd.message.reply_text("💰 Получено 200 запекоинов!")
 
 async def cmd_givecoins(upd, ctx):
-    t = get_target(upd)
+    t = await get_target(upd, ctx)
     if not t:
         return await upd.message.reply_text("Ответьте на сообщение или укажите @пользователя!")
     if t.id == upd.effective_user.id:
@@ -207,32 +226,41 @@ async def cmd_givecoins(upd, ctx):
     except: return await upd.message.reply_text("Число!")
     if amt <= 0: return await upd.message.reply_text("Положительное число!")
     conn = get_db()
-    cur = conn.execute("SELECT balance FROM users WHERE user_id=? AND chat_id=?", (upd.effective_user.id, upd.effective_chat.id))
+    cur = conn.cursor()
+    cur.execute("SELECT balance FROM users WHERE user_id=%s AND chat_id=%s", (upd.effective_user.id, upd.effective_chat.id))
     r = cur.fetchone()
     if not r or r[0] < amt:
+        cur.close()
         conn.close()
         return await upd.message.reply_text("❌ Недостаточно запекоинов!")
     recv = int(amt * (1 - COMMISSION))
     comm = amt - recv
-    conn.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND chat_id=?", (amt, upd.effective_user.id, upd.effective_chat.id))
-    conn.execute("UPDATE users SET balance=balance+? WHERE user_id=? AND chat_id=?", (recv, t.id, upd.effective_chat.id))
+    cur.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s AND chat_id=%s", (amt, upd.effective_user.id, upd.effective_chat.id))
+    cur.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s AND chat_id=%s", (recv, t.id, upd.effective_chat.id))
     conn.commit()
+    cur.close()
     conn.close()
     await upd.message.reply_text(f"✅ Переведено {amt}. {t.first_name} получил {recv} (комиссия: {comm})")
 
-def get_target(upd):
-    """Возвращает пользователя из reply или @упоминания"""
+async def get_target(upd, ctx):
     if upd.message.reply_to_message:
         return upd.message.reply_to_message.from_user
     if upd.message.entities:
         for e in upd.message.entities:
             if e.type == "text_mention" and e.user:
                 return e.user
+            if e.type == "mention":
+                username = upd.message.parse_entity(e).lstrip("@")
+                try:
+                    chat = await ctx.bot.get_chat(f"@{username}")
+                    return chat
+                except:
+                    pass
     return None
 
 async def bal_command(upd, ctx):
     u, c = upd.effective_user, upd.effective_chat
-    target = get_target(upd) or u
+    target = await get_target(upd, ctx) or u
     du = get_user(target.id, c.id, target.username or "", target.first_name or "")
     if target.id == u.id:
         await upd.message.reply_text(f"🪙 Ваш баланс: {du['balance']} запекоинов")
@@ -240,30 +268,22 @@ async def bal_command(upd, ctx):
         await upd.message.reply_text(f"🪙 Баланс {target.first_name}: {du['balance']} запекоинов")
 
 async def send_trade_request(upd, ctx, target_user, amt, cost, item, is_buy):
-    """Отправляет запрос на подтверждение сделки"""
     uid, cid = upd.effective_user.id, upd.effective_chat.id
     buyer_id = uid if is_buy else target_user.id
     seller_id = target_user.id if is_buy else uid
     item_name = "запеканок" if item == "c" else "сырников"
     prefix = "b" if is_buy else "s"
-    key = f"trade:{cid}:{prefix}:{uid}:{target_user.id}"
-
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Принять", callback_data=f"{prefix}_yes:{cid}:{buyer_id}:{seller_id}:{amt}:{cost}:{item}"),
         InlineKeyboardButton("❌ Отклонить", callback_data=f"{prefix}_no:{cid}:{buyer_id}:{seller_id}:{amt}:{cost}:{item}"),
     ]])
-
     who = "купить" if is_buy else "продать"
-    action = "продаёт" if is_buy else "покупает"
-    from_name = upd.effective_user.first_name or upd.effective_user.username or str(uid)
-    to_name = target_user.first_name or target_user.username or str(target_user.id)
     msg = f"@{upd.effective_user.first_name} хочет {who} {amt} {item_name} у @{target_user.first_name} за {cost} 🪙"
     await upd.message.reply_text(msg, reply_markup=kb)
 
 async def cmd_buy(upd, ctx):
-    s = get_target(upd)
-    if not s:
-        return await upd.message.reply_text("Ответьте на сообщение или укажите @продавца!")
+    s = await get_target(upd, ctx)
+    if not s: return await upd.message.reply_text("Ответьте на сообщение или укажите @продавца!")
     if s.id == upd.effective_user.id: return await upd.message.reply_text("Нельзя у себя!")
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
@@ -277,9 +297,8 @@ async def cmd_buy(upd, ctx):
     await send_trade_request(upd, ctx, s, amt, cost, "c", True)
 
 async def cmd_buy_s(upd, ctx):
-    s = get_target(upd)
-    if not s:
-        return await upd.message.reply_text("Ответьте на сообщение или укажите @продавца!")
+    s = await get_target(upd, ctx)
+    if not s: return await upd.message.reply_text("Ответьте на сообщение или укажите @продавца!")
     if s.id == upd.effective_user.id: return await upd.message.reply_text("Нельзя у себя!")
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
@@ -293,9 +312,8 @@ async def cmd_buy_s(upd, ctx):
     await send_trade_request(upd, ctx, s, amt, cost, "s", True)
 
 async def cmd_sell(upd, ctx):
-    b = get_target(upd)
-    if not b:
-        return await upd.message.reply_text("Ответьте на сообщение или укажите @покупателя!")
+    b = await get_target(upd, ctx)
+    if not b: return await upd.message.reply_text("Ответьте на сообщение или укажите @покупателя!")
     if b.id == upd.effective_user.id: return await upd.message.reply_text("Нельзя себе!")
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
@@ -309,9 +327,8 @@ async def cmd_sell(upd, ctx):
     await send_trade_request(upd, ctx, b, amt, cost, "c", False)
 
 async def cmd_sell_s(upd, ctx):
-    b = get_target(upd)
-    if not b:
-        return await upd.message.reply_text("Ответьте на сообщение или укажите @покупателя!")
+    b = await get_target(upd, ctx)
+    if not b: return await upd.message.reply_text("Ответьте на сообщение или укажите @покупателя!")
     if b.id == upd.effective_user.id: return await upd.message.reply_text("Нельзя себе!")
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
@@ -327,9 +344,8 @@ async def cmd_sell_s(upd, ctx):
 pending = {}
 
 async def cmd_coinflip(upd, ctx):
-    op = get_target(upd)
-    if not op:
-        return await upd.message.reply_text("Ответьте на сообщение или укажите @противника!")
+    op = await get_target(upd, ctx)
+    if not op: return await upd.message.reply_text("Ответьте на сообщение или укажите @противника!")
     if op.id == upd.effective_user.id: return await upd.message.reply_text("С собой нельзя!")
     if op.is_bot: return await upd.message.reply_text("С ботом нельзя!")
     if not ctx.args: return await upd.message.reply_text("Укажите ставку! /coinflip 100")
@@ -378,9 +394,11 @@ async def coinflip_cb(upd, ctx):
         else:
             winner, loser, wn, ln = u2id, u1id, f2, f1
         conn = get_db()
-        conn.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND chat_id=?", (bet, loser, cid))
-        conn.execute("UPDATE users SET balance=balance+? WHERE user_id=? AND chat_id=?", (bet, winner, cid))
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s AND chat_id=%s", (bet, loser, cid))
+        cur.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s AND chat_id=%s", (bet, winner, cid))
         conn.commit()
+        cur.close()
         conn.close()
         await msg.edit_text(f"🎉 Победил {wn}!\n💸 {ln} проиграл {bet} запекоинов.")
 
@@ -392,34 +410,28 @@ async def trade_cb(upd, ctx):
     cid, buyer_id, seller_id = int(parts[1]), int(parts[2]), int(parts[3])
     amt, cost = int(parts[4]), int(parts[5])
     item = parts[6]
-
     is_buy = action_prefix.startswith("b")
     confirmer_id = seller_id if is_buy else buyer_id
     if q.from_user.id != confirmer_id:
         return await q.answer("Не ваша сделка!", show_alert=True)
-
     if action_prefix.endswith("_no"):
         await q.edit_message_text("❌ Сделка отклонена.")
         return
-
     du1 = get_user(buyer_id, cid)
     du2 = get_user(seller_id, cid)
     item_name = "запеканок" if item == "c" else "сырников"
     seller_stock = du2["casseroles"] if item == "c" else du2["syrniki"]
     buyer_stock_field = "casseroles" if item == "c" else "syrniki"
-
     if du1["balance"] < cost:
         return await q.edit_message_text("❌ У покупателя не хватает запекоинов!")
     if seller_stock < amt:
         return await q.edit_message_text(f"❌ У продавца не хватает {item_name}!")
-
     comm = int(cost * COMMISSION)
     sget = cost - comm
     upd_user(buyer_id, cid, balance=du1["balance"]-cost)
     upd_user(buyer_id, cid, **{buyer_stock_field: du1[buyer_stock_field]+amt})
     upd_user(seller_id, cid, balance=du2["balance"]+sget)
     upd_user(seller_id, cid, **{buyer_stock_field: du2[buyer_stock_field]-amt})
-
     action = "купил" if is_buy else "продал"
     await q.edit_message_text(f"✅ {q.from_user.first_name} {action} {amt} {item_name} за {cost} 🪙")
 
