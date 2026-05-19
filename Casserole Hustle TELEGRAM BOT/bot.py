@@ -1,4 +1,4 @@
-import asyncio, random, time, re, sqlite3, os
+import asyncio, random, time, re, os, psycopg2
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
