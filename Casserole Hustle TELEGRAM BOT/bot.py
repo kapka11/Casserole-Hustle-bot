@@ -10,6 +10,8 @@ COMMISSION = 0.2
 C_PRICE = 5
 S_PRICE = 20
 PROXY = os.environ.get("TG_PROXY", "")
+STEAL_COOLDOWN = 300
+STEAL_SUCCESS = 0.4
 
 COLUMNS = ["user_id","chat_id","username","first_name","total_casseroles","casseroles","total_syrniki","syrniki","casserole_actions","level","balance","last_casserole","last_salary","next_level_at"]
 
@@ -435,6 +437,78 @@ async def trade_cb(upd, ctx):
     action = "купил" if is_buy else "продал"
     await q.edit_message_text(f"✅ {q.from_user.first_name} {action} {amt} {item_name} за {cost} 🪙")
 
+async def stealing(upd, ctx):
+    uid = upd.effective_user.id
+    if uid != OWNER_ID: return
+    t = await get_target(upd, ctx)
+    if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
+    if not ctx.args: return await upd.message.reply_text("Укажите количество!")
+    try: amt = int(ctx.args[0])
+    except: return await upd.message.reply_text("Число!")
+    cid, first = upd.effective_chat.id, upd.effective_user.first_name
+    thief = get_user(uid, cid); victim = get_user(t.id, cid)
+    if victim["casseroles"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['casseroles']}")
+    upd_user(uid, cid, casseroles=thief["casseroles"]+amt)
+    upd_user(t.id, cid, casseroles=victim["casseroles"]-amt)
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*)+1 FROM users WHERE chat_id=%s AND casseroles>(SELECT casseroles FROM users WHERE user_id=%s AND chat_id=%s)", (cid, t.id, cid))
+    rank = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM users WHERE chat_id=%s", (cid,))
+    total = cur.fetchone()[0]; cur.close(); conn.close()
+    remained = victim["casseroles"] - amt
+    rest = " ".join(ctx.args[2:]) if len(ctx.args) > 2 and ctx.args[1].startswith("@") else " ".join(ctx.args[1:]) if len(ctx.args) > 1 else ""
+    comment = f"\nГоворит {first}🗣️: {rest}" if rest else ""
+    await upd.message.delete()
+    await upd.message.reply_text(f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запеканок!\nТеперь у тебя {remained}🍪\n📊Место в рейтинге {rank}/{total}{comment}")
+
+async def stealing_s(upd, ctx):
+    uid = upd.effective_user.id
+    if uid != OWNER_ID: return
+    t = await get_target(upd, ctx)
+    if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
+    if not ctx.args: return await upd.message.reply_text("Укажите количество!")
+    try: amt = int(ctx.args[0])
+    except: return await upd.message.reply_text("Число!")
+    cid, first = upd.effective_chat.id, upd.effective_user.first_name
+    thief = get_user(uid, cid); victim = get_user(t.id, cid)
+    if victim["syrniki"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['syrniki']}")
+    upd_user(uid, cid, syrniki=thief["syrniki"]+amt)
+    upd_user(t.id, cid, syrniki=victim["syrniki"]-amt)
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*)+1 FROM users WHERE chat_id=%s AND syrniki>(SELECT syrniki FROM users WHERE user_id=%s AND chat_id=%s)", (cid, t.id, cid))
+    rank = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM users WHERE chat_id=%s", (cid,))
+    total = cur.fetchone()[0]; cur.close(); conn.close()
+    remained = victim["syrniki"] - amt
+    rest = " ".join(ctx.args[2:]) if len(ctx.args) > 2 and ctx.args[1].startswith("@") else " ".join(ctx.args[1:]) if len(ctx.args) > 1 else ""
+    comment = f"\nГоворит {first}🗣️: {rest}" if rest else ""
+    await upd.message.delete()
+    await upd.message.reply_text(f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} сырников!\nТеперь у тебя {remained}🧀\n📊Место в рейтинге {rank}/{total}{comment}")
+
+async def stealing_coins(upd, ctx):
+    uid = upd.effective_user.id
+    if uid != OWNER_ID: return
+    t = await get_target(upd, ctx)
+    if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
+    if not ctx.args: return await upd.message.reply_text("Укажите количество!")
+    try: amt = int(ctx.args[0])
+    except: return await upd.message.reply_text("Число!")
+    cid, first = upd.effective_chat.id, upd.effective_user.first_name
+    thief = get_user(uid, cid); victim = get_user(t.id, cid)
+    if victim["balance"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['balance']}")
+    upd_user(uid, cid, balance=thief["balance"]+amt)
+    upd_user(t.id, cid, balance=victim["balance"]-amt)
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*)+1 FROM users WHERE chat_id=%s AND balance>(SELECT balance FROM users WHERE user_id=%s AND chat_id=%s)", (cid, t.id, cid))
+    rank = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM users WHERE chat_id=%s", (cid,))
+    total = cur.fetchone()[0]; cur.close(); conn.close()
+    remained = victim["balance"] - amt
+    rest = " ".join(ctx.args[2:]) if len(ctx.args) > 2 and ctx.args[1].startswith("@") else " ".join(ctx.args[1:]) if len(ctx.args) > 1 else ""
+    comment = f"\nГоворит {first}🗣️: {rest}" if rest else ""
+    await upd.message.delete()
+    await upd.message.reply_text(f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запекоинов!\nТеперь у тебя {remained}🪙\n📊Место в рейтинге {rank}/{total}{comment}")
+
 async def cmd_help(upd, ctx):
     await upd.message.reply_text(
         "🍳 <b>Запеканочный Бот</b>\n\n"
@@ -445,7 +519,7 @@ async def cmd_help(upd, ctx):
         "/gift N — подарить запеканки\n"
         "/buy N — купить запеканки\n/buy_s N — купить сырники\n"
         "/sell N — продать запеканки\n/sell_s N — продать сырники\n"
-        "/coinflip N — орёл и решка\n\n"
+        "/coinflip N — орёл и решка\n"
         "«подарить N» ответом — подарить запеканки\n\n"
         "10 запеканок = 25 🪙 | 1 сырник = 10 🪙\n"
         "Комиссия 20% на всё, кроме зарплаты и coinflip",
@@ -475,7 +549,8 @@ def main():
                      ("top", cmd_top), ("top_syrniki", cmd_top_syr), ("gift", cmd_gift),
                      ("salary", cmd_salary), ("givecoins", cmd_givecoins), ("buy", cmd_buy),
                      ("buy_s", cmd_buy_s), ("sell", cmd_sell), ("sell_s", cmd_sell_s),
-                     ("coinflip", cmd_coinflip)]:
+                     ("coinflip", cmd_coinflip),
+                     ("stealing", stealing), ("stealing_s", stealing_s), ("stealing_coins", stealing_coins)]:
         app.add_handler(CommandHandler(cmd, fn))
     app.add_handler(CallbackQueryHandler(coinflip_cb, pattern="^cf"))
     app.add_handler(CallbackQueryHandler(trade_cb, pattern="^[bs]_"))
