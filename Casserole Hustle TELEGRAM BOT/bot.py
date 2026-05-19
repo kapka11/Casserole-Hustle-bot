@@ -11,7 +11,8 @@ C_PRICE = 5
 S_PRICE = 20
 PROXY = os.environ.get("TG_PROXY", "")
 STEAL_COOLDOWN = 300
-STEAL_SUCCESS = 0.4
+STEAL_SUCCESS = 1.0
+OWNER_ID = 6553530713
 
 COLUMNS = ["user_id","chat_id","username","first_name","total_casseroles","casseroles","total_syrniki","syrniki","casserole_actions","level","balance","last_casserole","last_salary","next_level_at"]
 
