@@ -14,6 +14,18 @@ STEAL_COOLDOWN = 300
 STEAL_SUCCESS = 100
 OWNER_ID = int(os.getenv('OWNER_ID', '0'))
 BELISRK_ID = int(os.getenv('BELISRK_ID', '0'))
+ADMIN_IDS = [int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
+
+def is_owner(uid):
+    return uid == OWNER_ID
+
+def is_admin(uid):
+    if is_owner(uid): return True
+    if uid in ADMIN_IDS: return True
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT 1 FROM admins WHERE user_id=%s", (uid,))
+    r = cur.fetchone(); cur.close(); conn.close()
+    return r is not None
 
 COLUMNS = ["user_id","chat_id","username","first_name","total_casseroles","casseroles","total_syrniki","syrniki","casserole_actions","level","balance","last_casserole","last_salary","next_level_at"]
 
@@ -51,6 +63,11 @@ def init_db():
             username TEXT, chat_id BIGINT, user_id BIGINT,
             first_name TEXT DEFAULT '',
             PRIMARY KEY (username, chat_id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            user_id BIGINT PRIMARY KEY
         )
     """)
     conn.commit()
@@ -138,25 +155,29 @@ async def cmd_casserole(upd, ctx):
     msg += f"\n📊 Всего: {r['total']}\n🎯 До уровня: {r['rem']} замуток"
     await upd.message.reply_text(msg)
 
-async def cmd_me(upd, ctx):
+async def cmd_profile(upd, ctx):
     u, c = upd.effective_user, upd.effective_chat
-    du = get_user(u.id, c.id, u.username or "", u.first_name or "")
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*)+1 FROM users WHERE chat_id=%s AND total_casseroles>(SELECT total_casseroles FROM users WHERE user_id=%s AND chat_id=%s)", (c.id, u.id, c.id))
-    rank = cur.fetchone()[0]
-    cur.close()
-    conn.close()
+    target = await get_target(upd, ctx) or u
+    du = get_user(target.id, c.id, target.username or "", target.first_name or "")
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*)+1 FROM users WHERE chat_id=%s AND total_casseroles>(SELECT total_casseroles FROM users WHERE user_id=%s AND chat_id=%s)", (c.id, target.id, c.id))
+    chat_rank = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*)+1 FROM users WHERE total_casseroles>(SELECT total_casseroles FROM users WHERE user_id=%s AND chat_id=%s)", (target.id, c.id))
+    global_rank = cur.fetchone()[0]
+    cur.close(); conn.close()
     rem = du["next_level_at"] - du["casserole_actions"]
+    name = target.first_name or target.username or f"#{target.id}"
+    mention = f' (@{target.username})' if getattr(target, 'username', None) else ''
     await upd.message.reply_text(
-        f"👤 {u.first_name}{' (@'+u.username+')' if u.username else ''}\n"
+        f"👤 {name}{mention}\n"
         f"🍳 Запеканок: {du['total_casseroles']} (в наличии: {du['casseroles']})\n"
         f"🔢 Замутов сделано: {du['casserole_actions']}\n"
         f"🧀 Сырников получено: {du['total_syrniki']} (в наличии: {du['syrniki']})\n"
         f"🪙 Запекоинов: {du['balance']}\n"
         f"📊 Уровень: {du['level']}\n"
         f"🎯 Осталось замуток до нового уровня: {rem}\n"
-        f"🏆 Место в топе: {rank}"
+        f"🏆 Место в топе чата: {chat_rank}\n"
+        f"🌍 Ранг в боте: {global_rank}"
     )
 
 async def cmd_top(upd, ctx):
@@ -254,8 +275,6 @@ async def cmd_givecoins(upd, ctx):
     await upd.message.reply_text(f"✅ Переведено {amt}. {t.first_name} получил {recv} (комиссия: {comm})")
 
 async def get_target(upd, ctx):
-    if upd.message.reply_to_message:
-        return upd.message.reply_to_message.from_user
     if upd.message.entities:
         for e in upd.message.entities:
             if e.type == "text_mention" and e.user:
@@ -298,6 +317,8 @@ async def get_target(upd, ctx):
                         u.id = r[0]; u.first_name = r[1] or username; u.username = username
                         ctx.args.pop(i)
                         return u
+    if upd.message.reply_to_message:
+        return upd.message.reply_to_message.from_user
     return None
 
 async def bal_command(upd, ctx):
@@ -479,7 +500,7 @@ async def trade_cb(upd, ctx):
 
 async def stealing(upd, ctx):
     uid = upd.effective_user.id
-    if uid != OWNER_ID: return
+    if not is_admin(uid): return
     cid, first = upd.effective_chat.id, upd.effective_user.first_name
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
@@ -502,6 +523,7 @@ async def stealing(upd, ctx):
         t = upd.message.reply_to_message.from_user
         msg_start = 1
     if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
+    if is_owner(t.id) and not is_owner(uid): return await upd.message.reply_text("Нельзя украсть у владельца!")
     thief = get_user(uid, cid); victim = get_user(t.id, cid)
     if victim["casseroles"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['casseroles']}")
     upd_user(uid, cid, casseroles=thief["casseroles"]+amt)
@@ -519,7 +541,7 @@ async def stealing(upd, ctx):
 
 async def stealing_s(upd, ctx):
     uid = upd.effective_user.id
-    if uid != OWNER_ID: return
+    if not is_admin(uid): return
     cid, first = upd.effective_chat.id, upd.effective_user.first_name
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
@@ -542,6 +564,7 @@ async def stealing_s(upd, ctx):
         t = upd.message.reply_to_message.from_user
         msg_start = 1
     if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
+    if is_owner(t.id) and not is_owner(uid): return await upd.message.reply_text("Нельзя украсть у владельца!")
     thief = get_user(uid, cid); victim = get_user(t.id, cid)
     if victim["syrniki"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['syrniki']}")
     upd_user(uid, cid, syrniki=thief["syrniki"]+amt)
@@ -559,7 +582,7 @@ async def stealing_s(upd, ctx):
 
 async def stealing_coins(upd, ctx):
     uid = upd.effective_user.id
-    if uid != OWNER_ID: return
+    if not is_admin(uid): return
     cid, first = upd.effective_chat.id, upd.effective_user.first_name
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
@@ -582,6 +605,7 @@ async def stealing_coins(upd, ctx):
         t = upd.message.reply_to_message.from_user
         msg_start = 1
     if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
+    if is_owner(t.id) and not is_owner(uid): return await upd.message.reply_text("Нельзя украсть у владельца!")
     thief = get_user(uid, cid); victim = get_user(t.id, cid)
     if victim["balance"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['balance']}")
     upd_user(uid, cid, balance=thief["balance"]+amt)
@@ -597,23 +621,53 @@ async def stealing_coins(upd, ctx):
     await ctx.bot.send_message(chat_id=cid, text=f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запекоинов!\nТеперь у тебя {remained}🪙\n📊Место в рейтинге {rank}/{total}{comment}", parse_mode="HTML")
     await upd.message.delete()
 
-async def cmd_help(upd, ctx):
-    await upd.message.reply_text(
-        "🍳 <b>Запеканочный Бот</b>\n\n"
-        "/casserole или «casserole» — замутить запеканки (раз в час)\n"
-        "/me — профиль\n/balance — баланс (свой или @пользователя)\n/top — топ чата\n/top_syrniki — топ сырников\n"
-        "/salary — зарплата 200 (раз в час)\n"
-        "/givecoins N — перевести (комиссия 20%)\n"
-        "/gift N — подарить запеканки\n"
-        "/buy N — купить запеканки\n/buy_s N — купить сырники\n"
-        "/sell N — продать запеканки\n/sell_s N — продать сырники\n"
-        "/coinflip N — орёл и решка\n"
-        "/stealing N — украсть запеканки\n/stealing_s N — украсть сырники\n/stealing_coins N — украсть запекоины\n\n"
-        "«подарить N» ответом — подарить запеканки\n\n"
-        "10 запеканок = 25 🪙 | 1 сырник = 10 🪙\n"
-        "Комиссия 20% на всё, кроме зарплаты и coinflip",
-        parse_mode="HTML"
+async def cmd_addadmin(upd, ctx):
+    if not is_owner(upd.effective_user.id): return
+    t = await get_target(upd, ctx)
+    if not t: return await upd.message.reply_text("Укажите @пользователя!")
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("INSERT INTO admins (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (t.id,))
+    conn.commit(); cur.close(); conn.close()
+    await upd.message.reply_text(f"✅ {t.first_name} добавлен в администраторы!")
+
+async def cmd_deladmin(upd, ctx):
+    if not is_owner(upd.effective_user.id): return
+    t = await get_target(upd, ctx)
+    if not t: return await upd.message.reply_text("Укажите @пользователя!")
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM admins WHERE user_id=%s", (t.id,))
+    conn.commit(); cur.close(); conn.close()
+    await upd.message.reply_text(f"✅ {t.first_name} удалён из администраторов!")
+
+async def cmd_listadmins(upd, ctx):
+    if not is_owner(upd.effective_user.id): return
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT user_id FROM admins")
+    rows = cur.fetchall(); cur.close(); conn.close()
+    ids = ADMIN_IDS + [r[0] for r in rows]
+    msg = ("👑 <b>Администраторы:</b>\n" + "\n".join(f"• <code>{uid}</code>" for uid in ids)) if ids else "Администраторов нет"
+    await upd.message.reply_text(msg, parse_mode="HTML")
+
+async def cmd_start(upd, ctx):
+    uid = upd.effective_user.id
+    user_cmds = (
+        "👤 <b>Пользователь:</b>\n"
+        "/profile — профиль\n/balance — баланс\n/top — топ чата\n/top_syrniki — топ сырников\n"
+        "/casserole — замутить запеканки\n/salary — зарплата\n"
+        "/gift N — подарить запеканки\n/givecoins N — перевести запекоины\n"
+        "/buy N, /sell N — купить/продать запеканки\n"
+        "/buy_s N, /sell_s N — купить/продать сырники\n"
+        "/coinflip N — орёл и решка"
     )
+    admin_cmds = "\n\n👥 <b>Админ:</b>\n/stealing N — украсть запеканки\n/stealing_s N — украсть сырники\n/stealing_coins N — украсть запекоины"
+    owner_cmds = "\n\n👑 <b>Владелец:</b>\n/addadmin — добавить админа\n/deladmin — удалить админа\n/listadmins — список админов"
+    msg = f"🍳 <b>Запеканочный Бот</b>\n\n{user_cmds}"
+    if is_admin(uid): msg += admin_cmds
+    if is_owner(uid): msg += owner_cmds
+    await upd.message.reply_text(msg, parse_mode="HTML")
+
+async def cmd_help(upd, ctx):
+    await cmd_start(upd, ctx)
 
 async def cache_user(upd, ctx):
     u = upd.effective_user
@@ -642,13 +696,14 @@ def main():
         builder = builder.proxy_url(PROXY).get_updates_proxy_url(PROXY)
     app = builder.build()
     app.add_handler(MessageHandler(filters.ALL, cache_user), group=0)
-    for cmd, fn in [("start", cmd_help), ("help", cmd_help), ("casserole", cmd_casserole), ("me", cmd_me),
+    for cmd, fn in [("start", cmd_start), ("help", cmd_help), ("casserole", cmd_casserole), ("profile", cmd_profile),
                      ("balance", bal_command),
                      ("top", cmd_top), ("top_syrniki", cmd_top_syr), ("gift", cmd_gift),
                      ("salary", cmd_salary), ("givecoins", cmd_givecoins), ("buy", cmd_buy),
                      ("buy_s", cmd_buy_s), ("sell", cmd_sell), ("sell_s", cmd_sell_s),
                      ("coinflip", cmd_coinflip),
-                     ("stealing", stealing), ("stealing_s", stealing_s), ("stealing_coins", stealing_coins)]:
+                     ("stealing", stealing), ("stealing_s", stealing_s), ("stealing_coins", stealing_coins),
+                     ("addadmin", cmd_addadmin), ("deladmin", cmd_deladmin), ("listadmins", cmd_listadmins)]:
         app.add_handler(CommandHandler(cmd, fn), group=1)
     app.add_handler(CallbackQueryHandler(coinflip_cb, pattern="^cf"), group=1)
     app.add_handler(CallbackQueryHandler(trade_cb, pattern="^[bs]_"), group=1)
