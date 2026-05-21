@@ -12,6 +12,7 @@ S_PRICE = 20
 PROXY = os.environ.get("TG_PROXY", "")
 STEAL_COOLDOWN = 300
 STEAL_SUCCESS = 100
+OWNER_ID = int(os.getenv('OWNER_ID', '0'))
 
 COLUMNS = ["user_id","chat_id","username","first_name","total_casseroles","casseroles","total_syrniki","syrniki","casserole_actions","level","balance","last_casserole","last_salary","next_level_at"]
 
@@ -274,6 +275,27 @@ async def get_target(upd, ctx):
                         class Fake: pass
                         u = Fake()
                         u.id = r[0]; u.first_name = r[1] or username; u.username = username
+                        return u
+    if ctx.args:
+        for i, arg in enumerate(ctx.args):
+            if arg.startswith("@"):
+                username = arg.lstrip("@")
+                try:
+                    chat = await ctx.bot.get_chat(f"@{username}")
+                    ctx.args.pop(i)
+                    return chat
+                except:
+                    conn = get_db()
+                    cur = conn.cursor()
+                    cur.execute("SELECT user_id, first_name FROM username_cache WHERE LOWER(username)=%s AND chat_id=%s LIMIT 1", (username.lower(), upd.effective_chat.id))
+                    r = cur.fetchone()
+                    cur.close()
+                    conn.close()
+                    if r:
+                        class Fake: pass
+                        u = Fake()
+                        u.id = r[0]; u.first_name = r[1] or username; u.username = username
+                        ctx.args.pop(i)
                         return u
     return None
 
