@@ -150,12 +150,12 @@ async def cmd_me(upd, ctx):
     await upd.message.reply_text(
         f"👤 {u.first_name}{' (@'+u.username+')' if u.username else ''}\n"
         f"🍳 Запеканок: {du['total_casseroles']} (в наличии: {du['casseroles']})\n"
-        f"🔢 Замутов сделано: {du['casserole_actions']}\n"
-        f"🧀 Сырников получено: {du['total_syrniki']} (в наличии: {du['syrniki']})\n"
+        f"🔢 Замутов: {du['casserole_actions']}\n"
+        f"🧀 Сырников: {du['total_syrniki']} (в наличии: {du['syrniki']})\n"
         f"🪙 Запекоинов: {du['balance']}\n"
         f"📊 Уровень: {du['level']}\n"
-        f"🎯 Осталось замуток до нового уровня: {rem}\n"
-        f"🏆 Место в топе: {rank}"
+        f"🎯 Осталось замуток: {rem}\n"
+        f"🏆 Место: {rank}"
     )
 
 async def cmd_top(upd, ctx):
