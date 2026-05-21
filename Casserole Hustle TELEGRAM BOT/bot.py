@@ -1,4 +1,4 @@
-import asyncio, random, time, re, os, psycopg2
+import asyncio, random, time, re, os, html, psycopg2
 from psycopg2.extras import RealDictCursor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -480,12 +480,28 @@ async def trade_cb(upd, ctx):
 async def stealing(upd, ctx):
     uid = upd.effective_user.id
     if uid != OWNER_ID: return
-    t = await get_target(upd, ctx)
-    if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
+    cid, first = upd.effective_chat.id, upd.effective_user.first_name
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
     except: return await upd.message.reply_text("Число!")
-    cid, first = upd.effective_chat.id, upd.effective_user.first_name
+    if amt <= 0: return await upd.message.reply_text("Положительное число!")
+    t, msg_start = None, 1
+    if len(ctx.args) > 1 and ctx.args[1].startswith("@"):
+        username = ctx.args[1].lstrip("@")
+        try:
+            t = await ctx.bot.get_chat(f"@{username}")
+        except:
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("SELECT user_id, first_name FROM username_cache WHERE LOWER(username)=%s AND chat_id=%s LIMIT 1", (username.lower(), cid))
+            r = cur.fetchone(); cur.close(); conn.close()
+            if r:
+                class Fake: pass
+                t = Fake(); t.id = r[0]; t.first_name = r[1] or username; t.username = username
+        msg_start = 2 if t else 1
+    if not t and upd.message.reply_to_message:
+        t = upd.message.reply_to_message.from_user
+        msg_start = 1
+    if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
     thief = get_user(uid, cid); victim = get_user(t.id, cid)
     if victim["casseroles"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['casseroles']}")
     upd_user(uid, cid, casseroles=thief["casseroles"]+amt)
@@ -496,20 +512,36 @@ async def stealing(upd, ctx):
     cur.execute("SELECT COUNT(*) FROM users WHERE chat_id=%s", (cid,))
     total = cur.fetchone()[0]; cur.close(); conn.close()
     remained = victim["casseroles"] - amt
-    rest = " ".join(ctx.args[2:]) if len(ctx.args) > 2 and ctx.args[1].startswith("@") else " ".join(ctx.args[1:]) if len(ctx.args) > 1 else ""
-    comment = f"\nГоворит {first}🗣️: {rest}" if rest else ""
-    await ctx.bot.send_message(chat_id=cid, text=f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запеканок!\nТеперь у тебя {remained}🍪\n📊Место в рейтинге {rank}/{total}{comment}")
+    rest = " ".join(ctx.args[msg_start:]) if len(ctx.args) > msg_start else ""
+    comment = f'\n<blockquote>{html.escape(rest)}</blockquote>' if rest else ""
+    await ctx.bot.send_message(chat_id=cid, text=f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запеканок!\nТеперь у тебя {remained}🍪\n📊Место в рейтинге {rank}/{total}{comment}", parse_mode="HTML")
     await upd.message.delete()
 
 async def stealing_s(upd, ctx):
     uid = upd.effective_user.id
     if uid != OWNER_ID: return
-    t = await get_target(upd, ctx)
-    if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
+    cid, first = upd.effective_chat.id, upd.effective_user.first_name
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
     except: return await upd.message.reply_text("Число!")
-    cid, first = upd.effective_chat.id, upd.effective_user.first_name
+    if amt <= 0: return await upd.message.reply_text("Положительное число!")
+    t, msg_start = None, 1
+    if len(ctx.args) > 1 and ctx.args[1].startswith("@"):
+        username = ctx.args[1].lstrip("@")
+        try:
+            t = await ctx.bot.get_chat(f"@{username}")
+        except:
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("SELECT user_id, first_name FROM username_cache WHERE LOWER(username)=%s AND chat_id=%s LIMIT 1", (username.lower(), cid))
+            r = cur.fetchone(); cur.close(); conn.close()
+            if r:
+                class Fake: pass
+                t = Fake(); t.id = r[0]; t.first_name = r[1] or username; t.username = username
+        msg_start = 2 if t else 1
+    if not t and upd.message.reply_to_message:
+        t = upd.message.reply_to_message.from_user
+        msg_start = 1
+    if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
     thief = get_user(uid, cid); victim = get_user(t.id, cid)
     if victim["syrniki"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['syrniki']}")
     upd_user(uid, cid, syrniki=thief["syrniki"]+amt)
@@ -520,20 +552,36 @@ async def stealing_s(upd, ctx):
     cur.execute("SELECT COUNT(*) FROM users WHERE chat_id=%s", (cid,))
     total = cur.fetchone()[0]; cur.close(); conn.close()
     remained = victim["syrniki"] - amt
-    rest = " ".join(ctx.args[2:]) if len(ctx.args) > 2 and ctx.args[1].startswith("@") else " ".join(ctx.args[1:]) if len(ctx.args) > 1 else ""
-    comment = f"\nГоворит {first}🗣️: {rest}" if rest else ""
-    await ctx.bot.send_message(chat_id=cid, text=f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} сырников!\nТеперь у тебя {remained}🧀\n📊Место в рейтинге {rank}/{total}{comment}")
+    rest = " ".join(ctx.args[msg_start:]) if len(ctx.args) > msg_start else ""
+    comment = f'\n<blockquote>{html.escape(rest)}</blockquote>' if rest else ""
+    await ctx.bot.send_message(chat_id=cid, text=f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} сырников!\nТеперь у тебя {remained}🧀\n📊Место в рейтинге {rank}/{total}{comment}", parse_mode="HTML")
     await upd.message.delete()
 
 async def stealing_coins(upd, ctx):
     uid = upd.effective_user.id
     if uid != OWNER_ID: return
-    t = await get_target(upd, ctx)
-    if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
+    cid, first = upd.effective_chat.id, upd.effective_user.first_name
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
     except: return await upd.message.reply_text("Число!")
-    cid, first = upd.effective_chat.id, upd.effective_user.first_name
+    if amt <= 0: return await upd.message.reply_text("Положительное число!")
+    t, msg_start = None, 1
+    if len(ctx.args) > 1 and ctx.args[1].startswith("@"):
+        username = ctx.args[1].lstrip("@")
+        try:
+            t = await ctx.bot.get_chat(f"@{username}")
+        except:
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("SELECT user_id, first_name FROM username_cache WHERE LOWER(username)=%s AND chat_id=%s LIMIT 1", (username.lower(), cid))
+            r = cur.fetchone(); cur.close(); conn.close()
+            if r:
+                class Fake: pass
+                t = Fake(); t.id = r[0]; t.first_name = r[1] or username; t.username = username
+        msg_start = 2 if t else 1
+    if not t and upd.message.reply_to_message:
+        t = upd.message.reply_to_message.from_user
+        msg_start = 1
+    if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
     thief = get_user(uid, cid); victim = get_user(t.id, cid)
     if victim["balance"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['balance']}")
     upd_user(uid, cid, balance=thief["balance"]+amt)
@@ -544,9 +592,9 @@ async def stealing_coins(upd, ctx):
     cur.execute("SELECT COUNT(*) FROM users WHERE chat_id=%s", (cid,))
     total = cur.fetchone()[0]; cur.close(); conn.close()
     remained = victim["balance"] - amt
-    rest = " ".join(ctx.args[2:]) if len(ctx.args) > 2 and ctx.args[1].startswith("@") else " ".join(ctx.args[1:]) if len(ctx.args) > 1 else ""
-    comment = f"\nГоворит {first}🗣️: {rest}" if rest else ""
-    await ctx.bot.send_message(chat_id=cid, text=f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запекоинов!\nТеперь у тебя {remained}🪙\n📊Место в рейтинге {rank}/{total}{comment}")
+    rest = " ".join(ctx.args[msg_start:]) if len(ctx.args) > msg_start else ""
+    comment = f'\n<blockquote>{html.escape(rest)}</blockquote>' if rest else ""
+    await ctx.bot.send_message(chat_id=cid, text=f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запекоинов!\nТеперь у тебя {remained}🪙\n📊Место в рейтинге {rank}/{total}{comment}", parse_mode="HTML")
     await upd.message.delete()
 
 async def cmd_help(upd, ctx):
