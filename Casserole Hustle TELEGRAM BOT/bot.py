@@ -13,6 +13,7 @@ PROXY = os.environ.get("TG_PROXY", "")
 STEAL_COOLDOWN = 300
 STEAL_SUCCESS = 100
 OWNER_ID = int(os.getenv('OWNER_ID', '0'))
+BELISRK_ID = int(os.getenv('BELISRK_ID', '0'))
 
 COLUMNS = ["user_id","chat_id","username","first_name","total_casseroles","casseroles","total_syrniki","syrniki","casserole_actions","level","balance","last_casserole","last_salary","next_level_at"]
 
@@ -150,12 +151,12 @@ async def cmd_me(upd, ctx):
     await upd.message.reply_text(
         f"👤 {u.first_name}{' (@'+u.username+')' if u.username else ''}\n"
         f"🍳 Запеканок: {du['total_casseroles']} (в наличии: {du['casseroles']})\n"
-        f"🔢 Замутов: {du['casserole_actions']}\n"
-        f"🧀 Сырников: {du['total_syrniki']} (в наличии: {du['syrniki']})\n"
+        f"🔢 Замутов сделано: {du['casserole_actions']}\n"
+        f"🧀 Сырников получено: {du['total_syrniki']} (в наличии: {du['syrniki']})\n"
         f"🪙 Запекоинов: {du['balance']}\n"
         f"📊 Уровень: {du['level']}\n"
-        f"🎯 Осталось замуток: {rem}\n"
-        f"🏆 Место: {rank}"
+        f"🎯 Осталось замуток до нового уровня: {rem}\n"
+        f"🏆 Место в топе: {rank}"
     )
 
 async def cmd_top(upd, ctx):
@@ -497,8 +498,8 @@ async def stealing(upd, ctx):
     remained = victim["casseroles"] - amt
     rest = " ".join(ctx.args[2:]) if len(ctx.args) > 2 and ctx.args[1].startswith("@") else " ".join(ctx.args[1:]) if len(ctx.args) > 1 else ""
     comment = f"\nГоворит {first}🗣️: {rest}" if rest else ""
+    await ctx.bot.send_message(chat_id=cid, text=f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запеканок!\nТеперь у тебя {remained}🍪\n📊Место в рейтинге {rank}/{total}{comment}")
     await upd.message.delete()
-    await upd.message.reply_text(f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запеканок!\nТеперь у тебя {remained}🍪\n📊Место в рейтинге {rank}/{total}{comment}")
 
 async def stealing_s(upd, ctx):
     uid = upd.effective_user.id
@@ -521,8 +522,8 @@ async def stealing_s(upd, ctx):
     remained = victim["syrniki"] - amt
     rest = " ".join(ctx.args[2:]) if len(ctx.args) > 2 and ctx.args[1].startswith("@") else " ".join(ctx.args[1:]) if len(ctx.args) > 1 else ""
     comment = f"\nГоворит {first}🗣️: {rest}" if rest else ""
+    await ctx.bot.send_message(chat_id=cid, text=f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} сырников!\nТеперь у тебя {remained}🧀\n📊Место в рейтинге {rank}/{total}{comment}")
     await upd.message.delete()
-    await upd.message.reply_text(f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} сырников!\nТеперь у тебя {remained}🧀\n📊Место в рейтинге {rank}/{total}{comment}")
 
 async def stealing_coins(upd, ctx):
     uid = upd.effective_user.id
@@ -545,8 +546,8 @@ async def stealing_coins(upd, ctx):
     remained = victim["balance"] - amt
     rest = " ".join(ctx.args[2:]) if len(ctx.args) > 2 and ctx.args[1].startswith("@") else " ".join(ctx.args[1:]) if len(ctx.args) > 1 else ""
     comment = f"\nГоворит {first}🗣️: {rest}" if rest else ""
+    await ctx.bot.send_message(chat_id=cid, text=f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запекоинов!\nТеперь у тебя {remained}🪙\n📊Место в рейтинге {rank}/{total}{comment}")
     await upd.message.delete()
-    await upd.message.reply_text(f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запекоинов!\nТеперь у тебя {remained}🪙\n📊Место в рейтинге {rank}/{total}{comment}")
 
 async def cmd_help(upd, ctx):
     await upd.message.reply_text(
