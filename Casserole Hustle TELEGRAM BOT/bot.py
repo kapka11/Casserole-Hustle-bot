@@ -837,61 +837,77 @@ async def cmd_transfer_s(upd, ctx):
 async def cmd_transfer_coins(upd, ctx):
     await _transfer_logic(upd, ctx, "balance", "запекоинов")
 
-async def cmd_addadmin(upd, ctx):
+async def _assign_role_logic(upd, ctx, role, is_remove):
     uid = upd.effective_user.id
     cid = upd.effective_chat.id
     
-    if not is_admin(uid, cid): return
+    actor_role = get_effective_role(uid, cid)
     
+    if role == 'owner':
+        return await upd.message.reply_text("❌ Нельзя назначать или увольнять владельца через команды.")
+    
+    if role not in ROLES:
+        return await upd.message.reply_text("❌ Неизвестная роль. Используйте: admin, moderator, tester")
+
     t = await get_target(upd, ctx)
-    if not t: return await upd.message.reply_text("Укажите @пользователя!")
+    if not t: 
+        if is_remove:
+            return await upd.message.reply_text("Формат: /delrole [role] @user [local/global]")
+        return await upd.message.reply_text("Формат: /addrole [role] @user [local/global]")
     
-    if not can_interact(uid, t.id, cid):
-        return await upd.message.reply_text("❌ Нельзя назначать пользователя с более высоким или равным рангом!")
+    if actor_role == 'admin' and role == 'admin':
+         return await upd.message.reply_text("❌ Администратор не может назначать других администраторов.")
     
+    if ROLES[actor_role] <= ROLES[role]:
+         return await upd.message.reply_text("❌ Нельзя назначать роль выше или равную вашей.")
+
     target_chat_id = cid
     target_chat_name = "в этом чате (локально)"
+    is_global = False
     
     if ctx.args and len(ctx.args) > 0:
         last_arg = ctx.args[-1].lower().strip()
         if last_arg == 'global':
+            is_global = True
             if not is_owner(uid):
-                return await upd.message.reply_text("❌ Только владелец может назначать глобальных модераторов!")
+                return await upd.message.reply_text("❌ Только владелец может назначать/увольнять глобальные роли.")
             target_chat_id = 0
             target_chat_name = "глобально"
 
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("INSERT INTO role_assignments (user_id, chat_id, role) VALUES (%s, %s, 'moderator') ON CONFLICT (user_id, chat_id) DO UPDATE SET role='moderator'", (t.id, target_chat_id))
-    conn.commit(); cur.close(); conn.close()
-    await upd.message.reply_text(f"✅ {t.first_name} добавлен в модераторы {target_chat_name}!")
+    if is_remove:
+        action_name = "удалён из"
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("DELETE FROM role_assignments WHERE user_id=%s AND chat_id=%s", (t.id, target_chat_id))
+        conn.commit(); cur.close(); conn.close()
+    else:
+        action_name = "назначен"
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("INSERT INTO role_assignments (user_id, chat_id, role) VALUES (%s, %s, %s) ON CONFLICT (user_id, chat_id) DO UPDATE SET role=%s", (t.id, target_chat_id, role, role))
+        conn.commit(); cur.close(); conn.close()
+
+    await upd.message.reply_text(f"✅ {t.first_name} {action_name} {role} {target_chat_name}!")
+
+async def cmd_addrole(upd, ctx):
+    if not ctx.args or len(ctx.args) < 1:
+        return await upd.message.reply_text("Формат: /addrole [admin/moderator/tester] @user [local/global]")
+    
+    target_role = ctx.args[0].lower().strip()
+    await _assign_role_logic(upd, ctx, target_role, is_remove=False)
+
+async def cmd_delrole(upd, ctx):
+    if not ctx.args or len(ctx.args) < 1:
+        return await upd.message.reply_text("Формат: /delrole [admin/moderator/tester] @user [local/global]")
+    
+    target_role = ctx.args[0].lower().strip()
+    await _assign_role_logic(upd, ctx, target_role, is_remove=True)
+
+async def cmd_addadmin(upd, ctx):
+    ctx.args.insert(0, 'moderator')
+    await cmd_addrole(upd, ctx)
 
 async def cmd_deladmin(upd, ctx):
-    uid = upd.effective_user.id
-    cid = upd.effective_chat.id
-    
-    if not is_admin(uid, cid): return
-    
-    t = await get_target(upd, ctx)
-    if not t: return await upd.message.reply_text("Укажите @пользователя!")
-    
-    if not can_interact(uid, t.id, cid):
-        return await upd.message.reply_text("❌ Нельзя увольнять пользователя с более высоким или равным рангом!")
-
-    target_chat_id = cid
-    target_chat_name = "в этом чате"
-    
-    if ctx.args and len(ctx.args) > 0:
-        last_arg = ctx.args[-1].lower().strip()
-        if last_arg == 'global':
-            if not is_owner(uid):
-                return await upd.message.reply_text("❌ Только владелец может увольнять глобальных модераторов!")
-            target_chat_id = 0
-            target_chat_name = "глобально"
-
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM role_assignments WHERE user_id=%s AND chat_id=%s", (t.id, target_chat_id))
-    conn.commit(); cur.close(); conn.close()
-    await upd.message.reply_text(f"✅ {t.first_name} удалён из модераторов {target_chat_name}!")
+    ctx.args.insert(0, 'moderator')
+    await cmd_delrole(upd, ctx)
 
 async def cmd_listadmins(upd, ctx):
     uid = upd.effective_user.id
@@ -918,25 +934,31 @@ async def cmd_listadmins(upd, ctx):
     
     local_mods_env = [x[0] for x in _env_mods if x[1] == cid]
     local_admins_env = [x[0] for x in _env_admins if x[1] == cid]
+    local_testers_env = [x[0] for x in _env_testers if x[1] == cid]
     global_mods_env = [x[0] for x in _env_mods if x[1] == 0]
     global_admins_env = [x[0] for x in _env_admins if x[1] == 0]
+    global_testers_env = [x[0] for x in _env_testers if x[1] == 0]
     
-    msg_lines.append(f"\n🛡️ <b>Модераторы (Локальные, БД):</b> " + (", ".join(f"<code>{uid}</code>" for uid, role in local_roles_db if role=='moderator') if local_roles_db else "нет"))
+    msg_lines.append(f"\n🔧 <b>Тестеры (Локальные, БД):</b> " + (", ".join(f"<code>{uid}</code>" for uid, role in local_roles_db if role=='tester') if local_roles_db else "нет"))
+    msg_lines.append(f"🛡️ <b>Модераторы (Локальные, БД):</b> " + (", ".join(f"<code>{uid}</code>" for uid, role in local_roles_db if role=='moderator') if local_roles_db else "нет"))
     msg_lines.append(f"⚡ <b>Админы (Локальные, БД):</b> " + (", ".join(f"<code>{uid}</code>" for uid, role in local_roles_db if role=='admin') if local_roles_db else "нет"))
     
-    if local_mods_env or local_admins_env:
+    if local_mods_env or local_admins_env or local_testers_env:
         msg_lines.append(f"\n<b>(Из переменных окружения для этого чата):</b>")
         if local_admins_env: msg_lines.append(f"⚡ ENV Admins: {', '.join(map(str, local_admins_env))}")
         if local_mods_env: msg_lines.append(f"🛡️ ENV Mods: {', '.join(map(str, local_mods_env))}")
+        if local_testers_env: msg_lines.append(f"🔧 ENV Testers: {', '.join(map(str, local_testers_env))}")
 
     msg_lines.append(f"\n🌍 <b>Глобальные роли (БД):</b>")
     msg_lines.append(f"⚡ Глобальные Админы: " + (", ".join(f"<code>{uid}</code>" for uid, role in global_roles_db if role=='admin') if global_roles_db else "нет"))
     msg_lines.append(f"🛡️ Глобальные Модераторы: " + (", ".join(f"<code>{uid}</code>" for uid, role in global_roles_db if role=='moderator') if global_roles_db else "нет"))
+    msg_lines.append(f"🔧 Глобальные Тестеры: " + (", ".join(f"<code>{uid}</code>" for uid, role in global_roles_db if role=='tester') if global_roles_db else "нет"))
     
-    if global_admins_env or global_mods_env:
+    if global_admins_env or global_mods_env or global_testers_env:
          msg_lines.append(f"\n<b>(Из глобальных переменных окружения):</b>")
          if global_admins_env: msg_lines.append(f"⚡ ENV Admins: {', '.join(map(str, global_admins_env))}")
          if global_mods_env: msg_lines.append(f"🛡️ ENV Mods: {', '.join(map(str, global_mods_env))}")
+         if global_testers_env: msg_lines.append(f"🔧 ENV Testers: {', '.join(map(str, global_testers_env))}")
 
     msg_lines.append(f"\n🔍 Ваш ранг здесь: <b>{my_role}</b>")
     
@@ -1022,7 +1044,7 @@ async def cmd_start(upd, ctx):
     )
     tester_cmds = "\n\n🔧 <b>Тестер:</b>\n/id — узнать свои ID\n/get_sticker_id — узнать ID стикера\n/msg_info — отладка сообщения"
     mod_cmds = "\n\n🛡️ <b>Модератор:</b>\n/transfer N @from @to — передать запеканки\n/transfer_s N @from @to — передать сырники\n/transfer_coins N @from @to — передать запекоины\n/listadmins — список ролей"
-    admin_cmds = "\n\n⚡ <b>Админ:</b>\n/stealing N — украсть запеканки\n/stealing_s N — украсть сырники\n/stealing_coins N — украсть запекоины\n/addadmin @user [local|global] — назначить модератора\n/deladmin @user [local|global] — уволить модератора"
+    admin_cmds = "\n\n⚡ <b>Админ:</b>\n/stealing N — украсть запеканки\n/stealing_s N — украсть сырники\n/stealing_coins N — украсть запекоины\n/addrole [tester/moderator] @user [local|global] — назначить роль\n/delrole [tester/moderator] @user [local|global] — уволить"
     
     msg = f"🍳 <b>Запеканочный Бот</b>\n\n{user_cmds}"
     if is_tester(uid, cid): msg += tester_cmds
@@ -1068,7 +1090,9 @@ def main():
                      ("coinflip", cmd_coinflip),
                      ("stealing", stealing), ("stealing_s", stealing_s), ("stealing_coins", stealing_coins),
                      ("transfer", cmd_transfer), ("transfer_s", cmd_transfer_s), ("transfer_coins", cmd_transfer_coins),
-                     ("addadmin", cmd_addadmin), ("deladmin", cmd_deladmin), ("listadmins", cmd_listadmins),
+                     ("addrole", cmd_addrole), ("delrole", cmd_delrole),
+                     ("addadmin", cmd_addadmin), ("deladmin", cmd_deladmin),
+                     ("listadmins", cmd_listadmins), ("listroles", cmd_listadmins),
                      ("id", cmd_myid), ("myid", cmd_myid), ("get_sticker_id", cmd_stickerid), ("stickerid", cmd_stickerid),
                      ("msg_info", cmd_info), ("info", cmd_info)]:
         app.add_handler(CommandHandler(cmd, fn), group=1)
