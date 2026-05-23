@@ -12,25 +12,49 @@ S_PRICE = 20
 PROXY = os.environ.get("TG_PROXY", "")
 STEAL_COOLDOWN = 300
 STEAL_SUCCESS = 100
+
 OWNER_ID = int(os.getenv('OWNER_ID', '0'))
-BELISRK_ID = int(os.getenv('BELISRK_ID', '0'))
-ADMIN_IDS = [int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
+ADMIN_IDS_RAW = os.getenv('ADMIN_IDS', '')
+MODERATOR_IDS_RAW = os.getenv('MODERATOR_IDS', '')
+TESTER_IDS_RAW = os.getenv('TESTER_IDS', '')
 
-def is_owner(uid):
-    return uid == OWNER_ID
+ROLES = {
+    'owner': 4,
+    'admin': 3,
+    'moderator': 2,
+    'tester': 1,
+    'user': 0
+}
 
-def is_admin(uid):
-    if is_owner(uid): return True
-    if uid in ADMIN_IDS: return True
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT 1 FROM admins WHERE user_id=%s", (uid,))
-    r = cur.fetchone(); cur.close(); conn.close()
-    return r is not None
+def _parse_ids_env(raw_str, default_chat_id=0):
+    assignments = []
+    if not raw_str:
+        return assignments
+    parts = [p.strip() for p in raw_str.split(',') if p.strip()]
+    for p in parts:
+        if '@' in p:
+            uid_str, target = p.split('@', 1)
+            try:
+                uid = int(uid_str.strip())
+                target = target.strip().lower()
+                if target == 'global':
+                    chat_id = 0
+                else:
+                    chat_id = int(target)
+                assignments.append( (uid, chat_id) )
+            except ValueError:
+                continue
+        else:
+            try:
+                uid = int(p)
+                assignments.append( (uid, default_chat_id) )
+            except ValueError:
+                continue
+    return assignments
 
-COLUMNS = ["user_id","chat_id","username","first_name","total_casseroles","casseroles","total_syrniki","syrniki","casserole_actions","level","balance","last_casserole","last_salary","next_level_at"]
-
-def row_dict(row, cols=COLUMNS):
-    return dict(zip(cols, row)) if row else None
+_env_admins = _parse_ids_env(ADMIN_IDS_RAW)
+_env_mods = _parse_ids_env(MODERATOR_IDS_RAW)
+_env_testers = _parse_ids_env(TESTER_IDS_RAW)
 
 def get_db():
     return psycopg2.connect(DATABASE_URL)
@@ -66,13 +90,120 @@ def init_db():
         )
     """)
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS admins (
-            user_id BIGINT PRIMARY KEY
+        CREATE TABLE IF NOT EXISTS role_assignments (
+            user_id BIGINT,
+            chat_id BIGINT DEFAULT 0,
+            role TEXT NOT NULL,
+            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, chat_id)
         )
     """)
     conn.commit()
     cur.close()
     conn.close()
+
+def _get_role_from_env(uid, cid):
+    if uid == OWNER_ID:
+        return 'owner'
+    
+    for (user_id, chat_id) in _env_admins:
+        if user_id == uid and (chat_id == cid or chat_id == 0):
+            if chat_id == cid: return 'admin'
+            
+    for (user_id, chat_id) in _env_mods:
+        if user_id == uid and (chat_id == cid or chat_id == 0):
+            if chat_id == cid: return 'moderator'
+            
+    for (user_id, chat_id) in _env_testers:
+        if user_id == uid and (chat_id == cid or chat_id == 0):
+            if chat_id == cid: return 'tester'
+            
+    for (user_id, chat_id) in _env_admins:
+        if user_id == uid and chat_id == 0:
+            return 'admin'
+    for (user_id, chat_id) in _env_mods:
+        if user_id == uid and chat_id == 0:
+            return 'moderator'
+    for (user_id, chat_id) in _env_testers:
+        if user_id == uid and chat_id == 0:
+            return 'tester'
+
+    return None
+
+def _get_role_from_db(uid, cid):
+    conn = get_db()
+    cur = conn.cursor()
+    
+    cur.execute("SELECT role FROM role_assignments WHERE user_id=%s AND chat_id=%s", (uid, cid))
+    r_local = cur.fetchone()
+    if r_local:
+        cur.close(); conn.close()
+        return r_local[0]
+    
+    cur.execute("SELECT role FROM role_assignments WHERE user_id=%s AND chat_id=0", (uid,))
+    r_global = cur.fetchone()
+    if r_global:
+        cur.close(); conn.close()
+        return r_global[0]
+    
+    cur.close(); conn.close()
+    return None
+
+def get_effective_role(uid, cid):
+    if uid == OWNER_ID:
+        return 'owner'
+    
+    role_db_local = _get_role_from_db(uid, cid)
+    if role_db_local:
+        return role_db_local
+    
+    role_env_local = None
+    if uid in [x[0] for x in _env_admins if x[1] == cid]: role_env_local = 'admin'
+    elif uid in [x[0] for x in _env_mods if x[1] == cid]: role_env_local = 'moderator'
+    elif uid in [x[0] for x in _env_testers if x[1] == cid]: role_env_local = 'tester'
+    
+    if role_env_local:
+        return role_env_local
+
+    role_db_global = _get_role_from_db(uid, 0)
+    if role_db_global:
+        return role_db_global
+
+    role_env_global = _get_role_from_env(uid, cid)
+    if role_env_global:
+        return role_env_global
+
+    return 'user'
+
+def is_owner(uid, cid=None):
+    return uid == OWNER_ID
+
+def is_admin(uid, cid):
+    role = get_effective_role(uid, cid)
+    return ROLES[role] >= ROLES['admin']
+
+def is_moderator(uid, cid):
+    role = get_effective_role(uid, cid)
+    return ROLES[role] >= ROLES['moderator']
+
+def is_tester(uid, cid):
+    role = get_effective_role(uid, cid)
+    return ROLES[role] >= ROLES['tester']
+
+def can_interact(actor_uid, target_uid, cid):
+    if actor_uid == target_uid: return False
+    if is_owner(actor_uid): return True
+    if is_owner(target_uid): return False
+    
+    actor_role = get_effective_role(actor_uid, cid)
+    target_role = get_effective_role(target_uid, cid)
+    
+    return ROLES[actor_role] > ROLES[target_role]
+
+COLUMNS = ["user_id","chat_id","username","first_name","total_casseroles","casseroles","total_syrniki","syrniki","casserole_actions","level","balance","last_casserole","last_salary","next_level_at"]
+
+def row_dict(row, cols=COLUMNS):
+    return dict(zip(cols, row)) if row else None
 
 def get_user(uid, cid, uname="", fname=""):
     conn = get_db()
@@ -500,12 +631,15 @@ async def trade_cb(upd, ctx):
 
 async def stealing(upd, ctx):
     uid = upd.effective_user.id
-    if not is_admin(uid): return
-    cid, first = upd.effective_chat.id, upd.effective_user.first_name
+    cid = upd.effective_chat.id
+    if not is_admin(uid, cid): return
+    first = upd.effective_user.first_name
+    
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
     except: return await upd.message.reply_text("Число!")
     if amt <= 0: return await upd.message.reply_text("Положительное число!")
+    
     t, msg_start = None, 1
     if len(ctx.args) > 1 and ctx.args[1].startswith("@"):
         username = ctx.args[1].lstrip("@")
@@ -523,7 +657,10 @@ async def stealing(upd, ctx):
         t = upd.message.reply_to_message.from_user
         msg_start = 1
     if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
-    if is_owner(t.id) and not is_owner(uid): return await upd.message.reply_text("Нельзя украсть у владельца!")
+    
+    if not can_interact(uid, t.id, cid): 
+        return await upd.message.reply_text("❌ Нельзя красть у пользователя с более высоким или равным рангом!")
+
     thief = get_user(uid, cid); victim = get_user(t.id, cid)
     if victim["casseroles"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['casseroles']}")
     upd_user(uid, cid, casseroles=thief["casseroles"]+amt)
@@ -541,12 +678,15 @@ async def stealing(upd, ctx):
 
 async def stealing_s(upd, ctx):
     uid = upd.effective_user.id
-    if not is_admin(uid): return
-    cid, first = upd.effective_chat.id, upd.effective_user.first_name
+    cid = upd.effective_chat.id
+    if not is_admin(uid, cid): return
+    first = upd.effective_user.first_name
+    
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
     except: return await upd.message.reply_text("Число!")
     if amt <= 0: return await upd.message.reply_text("Положительное число!")
+    
     t, msg_start = None, 1
     if len(ctx.args) > 1 and ctx.args[1].startswith("@"):
         username = ctx.args[1].lstrip("@")
@@ -564,7 +704,10 @@ async def stealing_s(upd, ctx):
         t = upd.message.reply_to_message.from_user
         msg_start = 1
     if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
-    if is_owner(t.id) and not is_owner(uid): return await upd.message.reply_text("Нельзя украсть у владельца!")
+    
+    if not can_interact(uid, t.id, cid): 
+        return await upd.message.reply_text("❌ Нельзя красть у пользователя с более высоким или равным рангом!")
+
     thief = get_user(uid, cid); victim = get_user(t.id, cid)
     if victim["syrniki"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['syrniki']}")
     upd_user(uid, cid, syrniki=thief["syrniki"]+amt)
@@ -582,12 +725,15 @@ async def stealing_s(upd, ctx):
 
 async def stealing_coins(upd, ctx):
     uid = upd.effective_user.id
-    if not is_admin(uid): return
-    cid, first = upd.effective_chat.id, upd.effective_user.first_name
+    cid = upd.effective_chat.id
+    if not is_admin(uid, cid): return
+    first = upd.effective_user.first_name
+    
     if not ctx.args: return await upd.message.reply_text("Укажите количество!")
     try: amt = int(ctx.args[0])
     except: return await upd.message.reply_text("Число!")
     if amt <= 0: return await upd.message.reply_text("Положительное число!")
+    
     t, msg_start = None, 1
     if len(ctx.args) > 1 and ctx.args[1].startswith("@"):
         username = ctx.args[1].lstrip("@")
@@ -605,7 +751,10 @@ async def stealing_coins(upd, ctx):
         t = upd.message.reply_to_message.from_user
         msg_start = 1
     if not t or t.id == uid: return await upd.message.reply_text("Укажите @жертву!")
-    if is_owner(t.id) and not is_owner(uid): return await upd.message.reply_text("Нельзя украсть у владельца!")
+    
+    if not can_interact(uid, t.id, cid): 
+        return await upd.message.reply_text("❌ Нельзя красть у пользователя с более высоким или равным рангом!")
+
     thief = get_user(uid, cid); victim = get_user(t.id, cid)
     if victim["balance"] < amt: return await upd.message.reply_text(f"❌ У жертвы {victim['balance']}")
     upd_user(uid, cid, balance=thief["balance"]+amt)
@@ -621,35 +770,247 @@ async def stealing_coins(upd, ctx):
     await ctx.bot.send_message(chat_id=cid, text=f"✨ {t.first_name} 🤞 {first} спиздил у тебя {amt} запекоинов!\nТеперь у тебя {remained}🪙\n📊Место в рейтинге {rank}/{total}{comment}", parse_mode="HTML")
     await upd.message.delete()
 
+async def _get_user_by_arg(ctx, cid, arg):
+    if not arg.startswith("@"):
+        return None
+    username = arg.lstrip("@")
+    t = None
+    try:
+        t = await ctx.bot.get_chat(f"@{username}")
+    except:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT user_id, first_name FROM username_cache WHERE LOWER(username)=%s AND chat_id=%s LIMIT 1", (username.lower(), cid))
+        r = cur.fetchone(); cur.close(); conn.close()
+        if r:
+            class Fake: pass
+            t = Fake(); t.id = r[0]; t.first_name = r[1] or username; t.username = username
+    return t
+
+async def _transfer_logic(upd, ctx, item_field, item_name):
+    uid = upd.effective_user.id
+    cid = upd.effective_chat.id
+    if not is_moderator(uid, cid): return
+    
+    if not ctx.args or len(ctx.args) < 3:
+        return await upd.message.reply_text(f"Формат: /transfer N @от_кого @кому")
+    
+    try: amt = int(ctx.args[0])
+    except: return await upd.message.reply_text("Количество должно быть числом!")
+    
+    if amt <= 0: return await upd.message.reply_text("Количество должно быть положительным!")
+    
+    t_from = await _get_user_by_arg(ctx, cid, ctx.args[1])
+    t_to = await _get_user_by_arg(ctx, cid, ctx.args[2])
+
+    if not t_from:
+        return await upd.message.reply_text(f"Не могу найти отправителя {ctx.args[1]}")
+    if not t_to:
+        return await upd.message.reply_text(f"Не могу найти получателя {ctx.args[2]}")
+
+    if t_from.id == t_to.id:
+        return await upd.message.reply_text("Нельзя передать самому себе!")
+
+    if not can_interact(uid, t_from.id, cid):
+        return await upd.message.reply_text("❌ Нельзя передавать от имени пользователя с более высоким или равным рангом!")
+
+    u_from = get_user(t_from.id, cid)
+    u_to = get_user(t_to.id, cid, t_to.username or "", t_to.first_name or "")
+
+    if u_from[item_field] < amt:
+        return await upd.message.reply_text(f"❌ У {t_from.first_name} недостаточно {item_name}!")
+
+    upd_user(t_from.id, cid, **{item_field: u_from[item_field] - amt})
+    upd_user(t_to.id, cid, **{item_field: u_to[item_field] + amt})
+
+    await upd.message.reply_text(
+        f"✅ Передано {amt} {item_name}\n"
+        f"От: {t_from.first_name} (@{t_from.username if hasattr(t_from, 'username') and t_from.username else '#'+str(t_from.id)})\n"
+        f"Кому: {t_to.first_name} (@{t_to.username if hasattr(t_to, 'username') and t_to.username else '#'+str(t_to.id)})"
+    )
+
+async def cmd_transfer(upd, ctx):
+    await _transfer_logic(upd, ctx, "casseroles", "запеканок")
+
+async def cmd_transfer_s(upd, ctx):
+    await _transfer_logic(upd, ctx, "syrniki", "сырников")
+
+async def cmd_transfer_coins(upd, ctx):
+    await _transfer_logic(upd, ctx, "balance", "запекоинов")
+
 async def cmd_addadmin(upd, ctx):
-    if not is_owner(upd.effective_user.id): return
+    uid = upd.effective_user.id
+    cid = upd.effective_chat.id
+    
+    if not is_admin(uid, cid): return
+    
     t = await get_target(upd, ctx)
     if not t: return await upd.message.reply_text("Укажите @пользователя!")
+    
+    if not can_interact(uid, t.id, cid):
+        return await upd.message.reply_text("❌ Нельзя назначать пользователя с более высоким или равным рангом!")
+    
+    target_chat_id = cid
+    target_chat_name = "в этом чате (локально)"
+    
+    if ctx.args and len(ctx.args) > 0:
+        last_arg = ctx.args[-1].lower().strip()
+        if last_arg == 'global':
+            if not is_owner(uid):
+                return await upd.message.reply_text("❌ Только владелец может назначать глобальных модераторов!")
+            target_chat_id = 0
+            target_chat_name = "глобально"
+
     conn = get_db(); cur = conn.cursor()
-    cur.execute("INSERT INTO admins (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (t.id,))
+    cur.execute("INSERT INTO role_assignments (user_id, chat_id, role) VALUES (%s, %s, 'moderator') ON CONFLICT (user_id, chat_id) DO UPDATE SET role='moderator'", (t.id, target_chat_id))
     conn.commit(); cur.close(); conn.close()
-    await upd.message.reply_text(f"✅ {t.first_name} добавлен в администраторы!")
+    await upd.message.reply_text(f"✅ {t.first_name} добавлен в модераторы {target_chat_name}!")
 
 async def cmd_deladmin(upd, ctx):
-    if not is_owner(upd.effective_user.id): return
+    uid = upd.effective_user.id
+    cid = upd.effective_chat.id
+    
+    if not is_admin(uid, cid): return
+    
     t = await get_target(upd, ctx)
     if not t: return await upd.message.reply_text("Укажите @пользователя!")
+    
+    if not can_interact(uid, t.id, cid):
+        return await upd.message.reply_text("❌ Нельзя увольнять пользователя с более высоким или равным рангом!")
+
+    target_chat_id = cid
+    target_chat_name = "в этом чате"
+    
+    if ctx.args and len(ctx.args) > 0:
+        last_arg = ctx.args[-1].lower().strip()
+        if last_arg == 'global':
+            if not is_owner(uid):
+                return await upd.message.reply_text("❌ Только владелец может увольнять глобальных модераторов!")
+            target_chat_id = 0
+            target_chat_name = "глобально"
+
     conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM admins WHERE user_id=%s", (t.id,))
+    cur.execute("DELETE FROM role_assignments WHERE user_id=%s AND chat_id=%s", (t.id, target_chat_id))
     conn.commit(); cur.close(); conn.close()
-    await upd.message.reply_text(f"✅ {t.first_name} удалён из администраторов!")
+    await upd.message.reply_text(f"✅ {t.first_name} удалён из модераторов {target_chat_name}!")
 
 async def cmd_listadmins(upd, ctx):
-    if not is_owner(upd.effective_user.id): return
+    uid = upd.effective_user.id
+    cid = upd.effective_chat.id
+    
+    if not is_moderator(uid, cid): return
+    
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT user_id FROM admins")
-    rows = cur.fetchall(); cur.close(); conn.close()
-    ids = ADMIN_IDS + [r[0] for r in rows]
-    msg = ("👑 <b>Администраторы:</b>\n" + "\n".join(f"• <code>{uid}</code>" for uid in ids)) if ids else "Администраторов нет"
+    
+    cur.execute("SELECT user_id, role, chat_id FROM role_assignments")
+    all_db_roles = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    my_role = get_effective_role(uid, cid)
+    
+    msg_lines = ["<b>⚙️ Роли в боте:</b>"]
+    
+    msg_lines.append(f"\n<b>Ранг этого чата ({cid}):</b>")
+    msg_lines.append(f"👑 Владелец: <code>{OWNER_ID}</code>")
+    
+    local_roles_db = [(uid, role) for uid, role, chat_id in all_db_roles if chat_id == cid]
+    global_roles_db = [(uid, role) for uid, role, chat_id in all_db_roles if chat_id == 0]
+    
+    local_mods_env = [x[0] for x in _env_mods if x[1] == cid]
+    local_admins_env = [x[0] for x in _env_admins if x[1] == cid]
+    global_mods_env = [x[0] for x in _env_mods if x[1] == 0]
+    global_admins_env = [x[0] for x in _env_admins if x[1] == 0]
+    
+    msg_lines.append(f"\n🛡️ <b>Модераторы (Локальные, БД):</b> " + (", ".join(f"<code>{uid}</code>" for uid, role in local_roles_db if role=='moderator') if local_roles_db else "нет"))
+    msg_lines.append(f"⚡ <b>Админы (Локальные, БД):</b> " + (", ".join(f"<code>{uid}</code>" for uid, role in local_roles_db if role=='admin') if local_roles_db else "нет"))
+    
+    if local_mods_env or local_admins_env:
+        msg_lines.append(f"\n<b>(Из переменных окружения для этого чата):</b>")
+        if local_admins_env: msg_lines.append(f"⚡ ENV Admins: {', '.join(map(str, local_admins_env))}")
+        if local_mods_env: msg_lines.append(f"🛡️ ENV Mods: {', '.join(map(str, local_mods_env))}")
+
+    msg_lines.append(f"\n🌍 <b>Глобальные роли (БД):</b>")
+    msg_lines.append(f"⚡ Глобальные Админы: " + (", ".join(f"<code>{uid}</code>" for uid, role in global_roles_db if role=='admin') if global_roles_db else "нет"))
+    msg_lines.append(f"🛡️ Глобальные Модераторы: " + (", ".join(f"<code>{uid}</code>" for uid, role in global_roles_db if role=='moderator') if global_roles_db else "нет"))
+    
+    if global_admins_env or global_mods_env:
+         msg_lines.append(f"\n<b>(Из глобальных переменных окружения):</b>")
+         if global_admins_env: msg_lines.append(f"⚡ ENV Admins: {', '.join(map(str, global_admins_env))}")
+         if global_mods_env: msg_lines.append(f"🛡️ ENV Mods: {', '.join(map(str, global_mods_env))}")
+
+    msg_lines.append(f"\n🔍 Ваш ранг здесь: <b>{my_role}</b>")
+    
+    msg = "\n".join(msg_lines)
     await upd.message.reply_text(msg, parse_mode="HTML")
+
+async def cmd_myid(upd, ctx):
+    uid = upd.effective_user.id
+    cid = upd.effective_chat.id
+    
+    if not is_tester(uid, cid): return
+    
+    msg = f"Ваш ID: <code>{uid}</code>\nID чата: <code>{cid}</code>"
+    
+    if upd.message.reply_to_message:
+        target = upd.message.reply_to_message.from_user
+        msg += f"\n\nID пользователя (ответ): {target.first_name}\nID: <code>{target.id}</code>"
+        if target.username:
+            msg += f"\nUsername: @{target.username}"
+    
+    await upd.message.reply_text(msg, parse_mode="HTML")
+
+async def cmd_stickerid(upd, ctx):
+    uid = upd.effective_user.id
+    cid = upd.effective_chat.id
+    
+    if not is_tester(uid, cid): return
+    
+    if not upd.message.reply_to_message or not upd.message.reply_to_message.sticker:
+        return await upd.message.reply_text("Ответьте этой командой на стикер!")
+    
+    sticker = upd.message.reply_to_message.sticker
+    msg = (
+        f"🖼️ ID стикера: <code>{sticker.file_id}</code>\n"
+        f"Уникальный ID: <code>{sticker.file_unique_id}</code>\n"
+        f"Набор: {sticker.set_name or 'Индивидуальный'}"
+    )
+    if sticker.emoji:
+        msg += f"\nЭмодзи: {sticker.emoji}"
+    
+    await upd.message.reply_text(msg, parse_mode="HTML")
+
+async def cmd_info(upd, ctx):
+    uid = upd.effective_user.id
+    cid = upd.effective_chat.id
+    
+    if not is_tester(uid, cid): return
+    
+    m = upd.message
+    info_lines = []
+    
+    info_lines.append(f"Message ID: <code>{m.message_id}</code>")
+    
+    if m.reply_to_message:
+        rm = m.reply_to_message
+        info_lines.append(f"\n--- Ответ на сообщение ---")
+        info_lines.append(f"From ID: <code>{rm.from_user.id}</code>")
+        if rm.forward_from:
+            info_lines.append(f"Forward from: <code>{rm.forward_from.id}</code> ({rm.forward_from.first_name})")
+        if rm.forward_from_chat:
+            info_lines.append(f"Forward from chat: <code>{rm.forward_from_chat.id}</code> ({rm.forward_from_chat.title})")
+        if rm.new_chat_members:
+            for u in rm.new_chat_members:
+                info_lines.append(f"New member: <code>{u.id}</code> ({u.first_name})")
+        if rm.left_chat_member:
+            info_lines.append(f"Left member: <code>{rm.left_chat_member.id}</code> ({rm.left_chat_member.first_name})")
+    
+    msg = "\n".join(info_lines)
+    await upd.message.reply_text(msg or "Нет особой информации", parse_mode="HTML")
 
 async def cmd_start(upd, ctx):
     uid = upd.effective_user.id
+    cid = upd.effective_chat.id
+    
     user_cmds = (
         "👤 <b>Пользователь:</b>\n"
         "/profile — профиль\n/balance — баланс\n/top — топ чата\n/top_syrniki — топ сырников\n"
@@ -659,11 +1020,14 @@ async def cmd_start(upd, ctx):
         "/buy_s N, /sell_s N — купить/продать сырники\n"
         "/coinflip N — орёл и решка"
     )
-    admin_cmds = "\n\n👥 <b>Админ:</b>\n/stealing N — украсть запеканки\n/stealing_s N — украсть сырники\n/stealing_coins N — украсть запекоины"
-    owner_cmds = "\n\n👑 <b>Владелец:</b>\n/addadmin — добавить админа\n/deladmin — удалить админа\n/listadmins — список админов"
+    tester_cmds = "\n\n🔧 <b>Тестер:</b>\n/id — узнать свои ID\n/get_sticker_id — узнать ID стикера\n/msg_info — отладка сообщения"
+    mod_cmds = "\n\n🛡️ <b>Модератор:</b>\n/transfer N @from @to — передать запеканки\n/transfer_s N @from @to — передать сырники\n/transfer_coins N @from @to — передать запекоины\n/listadmins — список ролей"
+    admin_cmds = "\n\n⚡ <b>Админ:</b>\n/stealing N — украсть запеканки\n/stealing_s N — украсть сырники\n/stealing_coins N — украсть запекоины\n/addadmin @user [local|global] — назначить модератора\n/deladmin @user [local|global] — уволить модератора"
+    
     msg = f"🍳 <b>Запеканочный Бот</b>\n\n{user_cmds}"
-    if is_admin(uid): msg += admin_cmds
-    if is_owner(uid): msg += owner_cmds
+    if is_tester(uid, cid): msg += tester_cmds
+    if is_moderator(uid, cid): msg += mod_cmds
+    if is_admin(uid, cid): msg += admin_cmds
     await upd.message.reply_text(msg, parse_mode="HTML")
 
 async def cmd_help(upd, ctx):
@@ -696,14 +1060,17 @@ def main():
         builder = builder.proxy_url(PROXY).get_updates_proxy_url(PROXY)
     app = builder.build()
     app.add_handler(MessageHandler(filters.ALL, cache_user), group=0)
-    for cmd, fn in [("start", cmd_start), ("help", cmd_help), ("casserole", cmd_casserole), ("profile", cmd_profile),
+    for cmd, fn in [("start", cmd_start), ("help", cmd_help), ("casserole", cmd_casserole), ("profile", cmd_profile), ("me", cmd_profile),
                      ("balance", bal_command),
                      ("top", cmd_top), ("top_syrniki", cmd_top_syr), ("gift", cmd_gift),
                      ("salary", cmd_salary), ("givecoins", cmd_givecoins), ("buy", cmd_buy),
                      ("buy_s", cmd_buy_s), ("sell", cmd_sell), ("sell_s", cmd_sell_s),
                      ("coinflip", cmd_coinflip),
                      ("stealing", stealing), ("stealing_s", stealing_s), ("stealing_coins", stealing_coins),
-                     ("addadmin", cmd_addadmin), ("deladmin", cmd_deladmin), ("listadmins", cmd_listadmins)]:
+                     ("transfer", cmd_transfer), ("transfer_s", cmd_transfer_s), ("transfer_coins", cmd_transfer_coins),
+                     ("addadmin", cmd_addadmin), ("deladmin", cmd_deladmin), ("listadmins", cmd_listadmins),
+                     ("id", cmd_myid), ("myid", cmd_myid), ("get_sticker_id", cmd_stickerid), ("stickerid", cmd_stickerid),
+                     ("msg_info", cmd_info), ("info", cmd_info)]:
         app.add_handler(CommandHandler(cmd, fn), group=1)
     app.add_handler(CallbackQueryHandler(coinflip_cb, pattern="^cf"), group=1)
     app.add_handler(CallbackQueryHandler(trade_cb, pattern="^[bs]_"), group=1)
